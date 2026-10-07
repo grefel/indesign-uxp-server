@@ -22,12 +22,24 @@ export function mmToPt(mm) {
  * in scope where this snippet is inlined.
  */
 export function withPointsUnitsSnippet(bodyCode) {
+    return withUnitsSnippet('points', bodyCode);
+}
+
+/**
+ * Like withPointsUnitsSnippet, but pins millimeters — for tools that read and
+ * write geometry directly in the documented mm unit.
+ */
+export function withMillimetersUnitsSnippet(bodyCode) {
+    return withUnitsSnippet('millimeters', bodyCode);
+}
+
+function withUnitsSnippet(unit, bodyCode) {
     return `
                 const __savedH = doc.viewPreferences.horizontalMeasurementUnits;
                 const __savedV = doc.viewPreferences.verticalMeasurementUnits;
                 const { MeasurementUnits: __MeasurementUnits } = require('indesign');
-                doc.viewPreferences.horizontalMeasurementUnits = __MeasurementUnits.points;
-                doc.viewPreferences.verticalMeasurementUnits   = __MeasurementUnits.points;
+                doc.viewPreferences.horizontalMeasurementUnits = __MeasurementUnits.${unit};
+                doc.viewPreferences.verticalMeasurementUnits   = __MeasurementUnits.${unit};
                 try {
                     ${bodyCode}
                 } finally {

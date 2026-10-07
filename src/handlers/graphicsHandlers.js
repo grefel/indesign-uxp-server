@@ -5,7 +5,9 @@ import { ScriptExecutor } from '../core/scriptExecutor.js';
 import { formatResponse, formatErrorResponse, escapeJsxString } from '../utils/stringUtils.js';
 import { sessionManager } from '../core/sessionManager.js';
 import { colorResolverSnippet } from '../utils/colorUtils.js';
-import { mmToPt, withPointsUnitsSnippet } from '../utils/geometryUtils.js';
+import { mmToPt, withPointsUnitsSnippet, withMillimetersUnitsSnippet } from '../utils/geometryUtils.js';
+import { parseItemId, findItemByIdSnippet } from '../utils/itemUtils.js';
+import fs from 'fs';
 
 export class GraphicsHandlers {
     /**
@@ -565,4 +567,157 @@ export class GraphicsHandlers {
         }
         return formatErrorResponse(result?.error || 'Failed to get image info', "Get Image Info");
     }
+
+    /**
+     * Sets frame bounds and image content bounds independently (aspect ratio
+     * of the image is preserved), optionally placing a file first and
+     * clipping the frame to its page. Returns the resulting effective ppi.
+     */
+    static async placeImageInFrame(args) {
+        const op = 'Place Image In Frame';
+        const { filePath, imageFit = 'fill', clipToPage = false, clipIncludeBleed = false } = args;
+        let itemId, frameBox, imageBox;
+        try {
+            itemId = parseItemId(args.itemId);
+            frameBox = parseBox(args.frameBounds, 'frameBounds', true);
+            imageBox = parseBox(args.imageBounds, 'imageBounds', false);
+            if (!['fill', 'fit'].includes(imageFit)) throw new Error(`imageFit must be 'fill' or 'fit'`);
+            if (filePath != null && !fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+        } catch (e) { return formatErrorResponse(e.message, op); }
+
+        const code = `
+            const { PageSideOptions } = require('indesign');
+            if (app.documents.length === 0) return { success: false, error: 'No document open' };
+            const doc = app.activeDocument;
+            ${findItemByIdSnippet('item', itemId)}
+            if (!item) return { success: false, error: 'No page item with id ${itemId}' };
+            const __r = v => Math.round(v * 1000) / 1000;
+            const FRAME_TYPES = ['Rectangle', 'Oval', 'Polygon'];
+            let frame = item;
+            if (!FRAME_TYPES.includes(item.constructor.name)) {
+                frame = item.parent;
+                if (!frame || !FRAME_TYPES.includes(frame.constructor.name)) {
+                    return { success: false, error: 'Item ${itemId} is a ' + item.constructor.name + ', expected a graphic frame or a placed graphic' };
+                }
+            }
+            if (Math.abs(frame.rotationAngle) > 0.001 || Math.abs(frame.shearAngle) > 0.001) {
+                return { success: false, error: 'Rotated or sheared frames are not supported' };
+            }
+            ${filePath != null ? `frame.place(${JSON.stringify(filePath)});` : ''}
+            const graphic = frame.allGraphics.length ? frame.allGraphics[0] : null;
+            if (!graphic) return { success: false, error: 'Frame contains no graphic; pass filePath to place one' };
+            if (Math.abs(graphic.rotationAngle) > 0.001 || Math.abs(graphic.shearAngle) > 0.001) {
+                return { success: false, error: 'Rotated or sheared graphics are not supported' };
+            }
+
+            ${withMillimetersUnitsSnippet(`
+                const frameBox = ${JSON.stringify(frameBox)};
+                const imageBox = ${JSON.stringify(imageBox)};
+                let fb = frameBox
+                    ? [frameBox.y, frameBox.x, frameBox.y + frameBox.height, frameBox.x + frameBox.width]
+                    : frame.geometricBounds;
+
+                // Seite über den Mittelpunkt bestimmen — der Rahmen kann über den Bund in die Nachbarseite ragen
+                const cx = (fb[1] + fb[3]) / 2, cy = (fb[0] + fb[2]) / 2;
+                const spreadPages = frame.parent.pages;
+                let page = frame.parentPage;
+                for (let i = 0; i < spreadPages.length; i++) {
+                    const pb = spreadPages.item(i).bounds;
+                    if (cx >= pb[1] && cx <= pb[3] && cy >= pb[0] && cy <= pb[2]) { page = spreadPages.item(i); break; }
+                }
+
+                let clipped = false;
+                if (${!!clipToPage}) {
+                    if (!page) return { success: false, error: 'Frame is not on a page; cannot clip to page' };
+                    const pb = page.bounds;
+                    let bt = 0, bb = 0, bl = 0, br = 0;
+                    if (${!!clipIncludeBleed}) {
+                        const dp = doc.documentPreferences;
+                        const inside = dp.documentBleedInsideOrLeftOffset, outside = dp.documentBleedOutsideOrRightOffset;
+                        bt = dp.documentBleedTopOffset;
+                        bb = dp.documentBleedBottomOffset;
+                        const left = page.side === PageSideOptions.LEFT_HAND;
+                        bl = left ? outside : inside;
+                        br = left ? inside : outside;
+                    }
+                    const c = [Math.max(fb[0], pb[0] - bt), Math.max(fb[1], pb[1] - bl), Math.min(fb[2], pb[2] + bb), Math.min(fb[3], pb[3] + br)];
+                    if (c[2] <= c[0] || c[3] <= c[1]) return { success: false, error: 'Frame does not overlap its page' };
+                    clipped = c.some((v, i) => Math.abs(v - fb[i]) > 0.0005);
+                    fb = c;
+                }
+                if (frameBox || clipped) frame.geometricBounds = fb;
+
+                if (imageBox) {
+                    const gb = graphic.geometricBounds;
+                    // Seitenverhältnis des Bildes ohne evtl. vorhandene Verzerrung
+                    const aspect = ((gb[3] - gb[1]) / graphic.horizontalScale) / ((gb[2] - gb[0]) / graphic.verticalScale);
+                    let w = imageBox.width, h = imageBox.height, x = imageBox.x, y = imageBox.y;
+                    if (w != null && h != null) {
+                        const boxW = w, boxH = h;
+                        const byWidth = ${JSON.stringify(imageFit)} === 'fill' ? (boxW / aspect >= boxH) : (boxW / aspect <= boxH);
+                        if (byWidth) { h = boxW / aspect; } else { w = boxH * aspect; }
+                        x += (boxW - w) / 2;
+                        y += (boxH - h) / 2;
+                    } else if (w != null) {
+                        h = w / aspect;
+                    } else {
+                        w = h * aspect;
+                    }
+                    graphic.geometricBounds = [y, x, y + h, x + w];
+                }
+
+                const f = frame.geometricBounds, g = graphic.geometricBounds;
+                const gaps = { top: __r(Math.max(0, g[0] - f[0])), left: __r(Math.max(0, g[1] - f[1])), bottom: __r(Math.max(0, f[2] - g[2])), right: __r(Math.max(0, f[3] - g[3])) };
+                let link = null;
+                try { link = graphic.itemLink ? { name: graphic.itemLink.name, status: String(graphic.itemLink.status) } : null; } catch (e) {}
+                return {
+                    success: true,
+                    frameId: frame.id,
+                    graphicId: graphic.id,
+                    graphicType: graphic.constructor.name,
+                    units: 'mm',
+                    frameBounds: f.map(__r),
+                    imageBounds: g.map(__r),
+                    scalePercent: [__r(graphic.horizontalScale), __r(graphic.verticalScale)],
+                    effectivePpi: graphic.effectivePpi || null,
+                    actualPpi: graphic.actualPpi || null,
+                    coversFrame: Object.values(gaps).every(v => v < 0.001),
+                    gaps,
+                    clippedToPage: clipped,
+                    page: page ? page.name : null,
+                    link,
+                };
+            `)}
+        `;
+
+        const result = await ScriptExecutor.executeViaUXP(code);
+        return result?.success
+            ? formatResponse(result, op)
+            : formatErrorResponse(result?.error || 'Failed to place image in frame', op);
+    }
+}
+
+/**
+ * Accepts {x, y, width, height} (mm) or geometricBounds [y1, x1, y2, x2].
+ * With requireSize=false one of width/height may be omitted (derived from
+ * the image's aspect ratio).
+ */
+function parseBox(value, label, requireSize) {
+    if (value === undefined || value === null) return null;
+    let box = value;
+    if (Array.isArray(value)) {
+        if (value.length !== 4) throw new Error(`${label} array must be [y1, x1, y2, x2]`);
+        const [y1, x1, y2, x2] = value.map(Number);
+        box = { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+    }
+    const num = v => (v === undefined || v === null ? null : Number(v));
+    const out = { x: num(box.x), y: num(box.y), width: num(box.width), height: num(box.height) };
+    if (!Number.isFinite(out.x) || !Number.isFinite(out.y)) throw new Error(`${label}.x and ${label}.y are required numbers`);
+    for (const k of ['width', 'height']) {
+        if (out[k] !== null && !(Number.isFinite(out[k]) && out[k] > 0)) throw new Error(`${label}.${k} must be a positive number`);
+    }
+    if (requireSize ? (out.width === null || out.height === null) : (out.width === null && out.height === null)) {
+        throw new Error(requireSize ? `${label} needs width and height` : `${label} needs width and/or height`);
+    }
+    return out;
 } 

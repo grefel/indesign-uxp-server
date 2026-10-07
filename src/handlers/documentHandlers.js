@@ -44,26 +44,38 @@ export class DocumentHandlers {
                 return { error: 'No document open' };
             }
             const doc = app.activeDocument;
+            const { MeasurementUnits, ScriptLanguage } = require('indesign');
+            // doc.filePath/fullName werfen unter Windows auf gespeicherten Dokumenten
+            // (UXP baut file:///C:%5C...-URLs, die es selbst nicht auflösen kann) → ExtendScript.
+            const saved = doc.saved;
             let filePath = 'Unsaved';
-            try {
-                const fp = await doc.filePath;
-                filePath = fp ? (fp.nativePath || fp.url || String(fp) || 'Unsaved') : 'Unsaved';
-            } catch (e) {}
+            if (saved) {
+                try { filePath = app.doScript('app.activeDocument.fullName.fsName', ScriptLanguage.JAVASCRIPT); }
+                catch (e) { filePath = 'Unknown'; }
+            }
             // L3: switch to mm before reading dimensions so sessionManager always gets mm values
-            const { MeasurementUnits } = require('indesign');
             const savedH = doc.viewPreferences.horizontalMeasurementUnits;
             const savedV = doc.viewPreferences.verticalMeasurementUnits;
             doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.millimeters;
             doc.viewPreferences.verticalMeasurementUnits   = MeasurementUnits.millimeters;
+            // documentPreferences.pageWidth/Height sind nur die Vorgabe für neue Seiten;
+            // einzeln skalierte Seiten weichen davon ab → tatsächliche Seiten-Bounds [y1, x1, y2, x2] lesen.
+            const sizes = doc.pages.everyItem().bounds.map(b => [b[3] - b[1], b[2] - b[0]]);
+            const [width, height] = sizes[0];
             const info = {
                 name: doc.name,
                 filePath,
+                saved,
+                modified: doc.modified,
                 pages: doc.pages.length,
                 spreads: doc.spreads.length,
                 layers: doc.layers.length,
                 masterSpreads: doc.masterSpreads.length,
-                width: doc.documentPreferences.pageWidth,
-                height: doc.documentPreferences.pageHeight,
+                width,
+                height,
+                mixedPageSizes: sizes.some(([w, h]) => Math.abs(w - width) > 0.01 || Math.abs(h - height) > 0.01),
+                defaultPageWidth: doc.documentPreferences.pageWidth,
+                defaultPageHeight: doc.documentPreferences.pageHeight,
                 facingPages: doc.documentPreferences.facingPages,
                 bleedTop: doc.documentPreferences.documentBleedTopOffset,
                 bleedBottom: doc.documentPreferences.documentBleedBottomOffset,
@@ -241,9 +253,7 @@ export class DocumentHandlers {
             ${filePath
                 ? `await doc.save(${JSON.stringify(filePath)});`
                 : `
-            let savedPath = null;
-            try { const fp = await doc.filePath; savedPath = fp ? String(fp) : null; } catch(e) {}
-            if (!savedPath || savedPath === 'null') {
+            if (!doc.saved) {
                 return { success: false, error: 'Document has never been saved. Provide a filePath to save to a new location.' };
             }
             await doc.save();`
