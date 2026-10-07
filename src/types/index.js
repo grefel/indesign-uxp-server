@@ -14,6 +14,7 @@ import { masterSpreadToolDefinitions } from './toolDefinitionsMasterSpread.js';
 import { spreadToolDefinitions } from './toolDefinitionsSpread.js';
 import { layerToolDefinitions } from './toolDefinitionsLayer.js';
 import { imageAnalysisToolDefinitions } from './toolDefinitionsImageAnalysis.js';
+import { layoutModelToolDefinitions } from './toolDefinitionsLayoutModel.js';
 
 // Combine all tool definitions into a single array
 export const allToolDefinitions = [
@@ -28,6 +29,7 @@ export const allToolDefinitions = [
     ...spreadToolDefinitions,
     ...layerToolDefinitions,
     ...imageAnalysisToolDefinitions,
+    ...layoutModelToolDefinitions,
 ];
 
 // Export individual modules for specific use cases
@@ -41,4 +43,5 @@ export { pageItemGroupToolDefinitions } from './toolDefinitionsPageItemGroup.js'
 export { masterSpreadToolDefinitions } from './toolDefinitionsMasterSpread.js';
 export { spreadToolDefinitions } from './toolDefinitionsSpread.js';
 export { layerToolDefinitions } from './toolDefinitionsLayer.js';
-export { imageAnalysisToolDefinitions } from './toolDefinitionsImageAnalysis.js'; 
+export { imageAnalysisToolDefinitions } from './toolDefinitionsImageAnalysis.js';
+export { layoutModelToolDefinitions } from './toolDefinitionsLayoutModel.js'; 

@@ -225,6 +225,7 @@ export async function getMotifMask(filePath, params, { useCache = true } = {}) {
 
 // ---------------------------------------------------------------- Geometrie
 
+/** Schnittrechteck oder null. */
 export function intersectRect(a, b) {
     const r = {
         top: Math.max(a.top, b.top), left: Math.max(a.left, b.left),
@@ -233,20 +234,48 @@ export function intersectRect(a, b) {
     return r.top < r.bottom && r.left < r.right ? r : null;
 }
 
+/** InDesign-geometricBounds [top, left, bottom, right] → Rechteck. */
 export function boundsToRect(b) {
     return { top: b[0], left: b[1], bottom: b[2], right: b[3] };
 }
 
+/** Rechteck → [top, left, bottom, right] (gerundet auf 0,1 mm), null bleibt null. */
 export function rectToArray(r, f = r1) {
     return r ? [f(r.top), f(r.left), f(r.bottom), f(r.right)] : null;
 }
 
-function unionRect(rects) {
+/** Umschließendes Rechteck; null-Einträge werden ignoriert, leer → null. */
+export function unionRect(rects) {
+    rects = rects.filter(Boolean);
     if (!rects.length) return null;
     return rects.reduce((u, r) => ({
         top: Math.min(u.top, r.top), left: Math.min(u.left, r.left),
         bottom: Math.max(u.bottom, r.bottom), right: Math.max(u.right, r.right),
     }));
+}
+
+/**
+ * Platzierung aus InDesign-Geometrie (mm): Clip = Rahmen ∩ Seite,
+ * Spiegelung aus String(image.absoluteFlip).
+ * @param {{imageBounds:number[], frameBounds:number[], pageBounds?:number[]|null, flip?:string}} g
+ * @returns {{imageBounds:number[], flipH:boolean, flipV:boolean, clip:number[]}}
+ */
+export function placementFromGeometry({ imageBounds, frameBounds, pageBounds = null, flip = '' }) {
+    const f = String(flip || '').toUpperCase();
+    const both = f.includes('BOTH') || f.includes('HORIZONTAL_AND_VERTICAL');
+    const flipH = both || /(^|\.)HORIZONTAL$/.test(f);
+    const flipV = both || /(^|\.)VERTICAL$/.test(f);
+    const frameRect = boundsToRect(frameBounds);
+    const clip = pageBounds ? intersectRect(frameRect, boundsToRect(pageBounds)) : frameRect;
+    return { imageBounds, flipH, flipV, clip: clip ? [clip.top, clip.left, clip.bottom, clip.right] : [0, 0, 0, 0] };
+}
+
+/**
+ * Motivrechtecke (mm) einer platzierten Maske, standardmäßig nur der
+ * sichtbare Teil – Eingabe für checkRect().
+ */
+export function motifRects(placed, { visibleOnly = true } = {}) {
+    return placed.cells.map(c => (visibleOnly ? c.visible : c.rect)).filter(Boolean);
 }
 
 /**
@@ -326,8 +355,8 @@ export function orientedMaskRows(mask, { flipH = false, flipV = false } = {}) {
 
 /**
  * Größte freie Rechtecke (Zellraster, Seitenorientierung) innerhalb des
- * sichtbaren Bildbereichs, in mm. Zellen gelten als verfügbar, wenn frei und
- * mindestens zur Hälfte sichtbar. Greedy, überlappungsfrei.
+ * sichtbaren Bildbereichs, in mm (auf den Clip beschnitten). Zellen gelten als
+ * verfügbar, wenn frei und zumindest teilweise sichtbar. Greedy, überlappungsfrei.
  */
 export function largestFreeRects(placed, placement, { count = 3, minCells = 4 } = {}) {
     const { cols, rows, clip } = placed;
@@ -338,10 +367,7 @@ export function largestFreeRects(placed, placement, { count = 3, minCells = 4 } 
     for (const cell of placed.cells) avail[cell.row][cell.col] = 0;
     if (clip) {
         for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-            const cr = cellRect(r, c);
-            const vis = intersectRect(cr, clip);
-            const ratio = vis ? ((vis.bottom - vis.top) * (vis.right - vis.left)) / (cw * ch) : 0;
-            if (ratio < 0.5) avail[r][c] = 0;
+            if (!intersectRect(cellRect(r, c), clip)) avail[r][c] = 0;
         }
     }
 

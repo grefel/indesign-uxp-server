@@ -14,6 +14,7 @@ import {
     HelpHandlers,
     ImageAnalysisHandlers,
     LayerHandlers,
+    LayoutModelHandlers,
     MasterSpreadHandlers,
     PageHandlers,
     PageItemHandlers,
@@ -164,6 +165,11 @@ export class InDesignMCPServer {
             // Image Analysis
             case 'analyze_image_free_space': return await ImageAnalysisHandlers.analyzeImageFreeSpace(args);
             case 'check_motif_collision': return await ImageAnalysisHandlers.checkMotifCollision(args);
+
+            // Layout Model
+            case 'get_layout_model': return await LayoutModelHandlers.getLayoutModel(args);
+            case 'measure_text_table': return await LayoutModelHandlers.measureTextTable(args);
+            case 'measure_text_in_shapes': return await LayoutModelHandlers.measureTextInShapes(args);
 
             // Layers
             case 'duplicate_items_to_layer': return await LayerHandlers.duplicateItemsToLayer(args);

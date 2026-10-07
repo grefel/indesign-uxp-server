@@ -11,8 +11,8 @@ import { withMillimetersUnitsSnippet } from '../utils/geometryUtils.js';
 import { parseItemId, findItemByIdSnippet } from '../utils/itemUtils.js';
 import {
     getMotifMask, normalizeMaskParams, placeMask, rowSpans, orientedMaskRows,
-    largestFreeRects, resolutionInfo, checkRect, intersectRect, boundsToRect,
-    rectToArray, r1,
+    largestFreeRects, resolutionInfo, checkRect, boundsToRect, rectToArray, r1,
+    placementFromGeometry, motifRects, unionRect,
 } from '../utils/imageMask.js';
 
 /**
@@ -87,18 +87,7 @@ const LINE_BOXES_SNIPPET = `
 const UNSUPPORTED_HINT = 'Supported formats: JPEG, PNG, TIFF, WebP, GIF, AVIF. For PSD/AI/PDF/EPS export a JPEG/PNG preview of the image and analyse that instead.';
 
 function placementFromInfo(info) {
-    const flip = String(info.flip || '').toUpperCase();
-    const both = flip.includes('BOTH') || flip.includes('HORIZONTAL_AND_VERTICAL');
-    const flipH = both || flip === 'HORIZONTAL' || flip.endsWith('.HORIZONTAL');
-    const flipV = both || flip === 'VERTICAL' || flip.endsWith('.VERTICAL');
-    const frameRect = boundsToRect(info.frameBounds);
-    const pageRect = info.pageBounds ? boundsToRect(info.pageBounds) : null;
-    const clip = pageRect ? intersectRect(frameRect, pageRect) : frameRect;
-    return {
-        imageBounds: info.imageBounds,
-        flipH, flipV,
-        clip: clip ? [clip.top, clip.left, clip.bottom, clip.right] : [0, 0, 0, 0],
-    };
+    return placementFromGeometry(info);
 }
 
 function placementWarnings(info, mask) {
@@ -149,15 +138,6 @@ function cutSides(full, clip) {
     return s;
 }
 
-function union(rects) {
-    const list = rects.filter(Boolean);
-    if (!list.length) return null;
-    return list.reduce((u, r) => ({
-        top: Math.min(u.top, r.top), left: Math.min(u.left, r.left),
-        bottom: Math.max(u.bottom, r.bottom), right: Math.max(u.right, r.right),
-    }));
-}
-
 const area = r => (r ? (r.bottom - r.top) * (r.right - r.left) : 0);
 
 export class ImageAnalysisHandlers {
@@ -185,8 +165,8 @@ export class ImageAnalysisHandlers {
 
         const placement = placementFromInfo(info);
         const placed = placeMask(mask, placement);
-        const fullBBox = union(placed.cells.map(c => c.rect));
-        const visBBox = union(placed.cells.map(c => c.visible));
+        const fullBBox = unionRect(placed.cells.map(c => c.rect));
+        const visBBox = unionRect(placed.cells.map(c => c.visible));
         const visibleArea = placed.cells.reduce((s, c) => s + area(c.visible), 0);
         const fullArea = placed.cells.reduce((s, c) => s + area(c.rect), 0);
         const ib = info.imageBounds;
@@ -292,7 +272,7 @@ export class ImageAnalysisHandlers {
         }
         const placement = placementFromInfo(info);
         const placed = placeMask(mask, placement);
-        const motif = placed.cells.map(c => c.visible).filter(Boolean);
+        const motif = motifRects(placed);
 
         const results = [];
         for (const it of res.items) {
