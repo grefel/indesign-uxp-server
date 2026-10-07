@@ -143,8 +143,10 @@ async function loadSharp() {
 /**
  * Lädt ein Bild als Graustufen-Rohpixel (Alpha auf Weiß geflattet,
  * ggf. verkleinert). Wirft { code: 'unsupported' } bei nicht lesbaren Formaten.
+ * Mit saturation: true wird RGB dekodiert und zusätzlich `sat` (max−min je
+ * Pixel, 0..255) geliefert; gray dann per Rec.-709-Luma (wie libvips).
  */
-export async function loadGray(filePath, maxSide = 1024) {
+export async function loadGray(filePath, maxSide = 1024, { saturation = false } = {}) {
     const sharp = await loadSharp();
     if (!sharp) throw Object.assign(new Error('Image library "sharp" is not installed'), { code: 'unsupported' });
     let meta;
@@ -153,15 +155,31 @@ export async function loadGray(filePath, maxSide = 1024) {
     } catch (e) {
         throw Object.assign(new Error(`Unsupported or unreadable image format: ${e.message}`), { code: 'unsupported' });
     }
-    const { data, info } = await sharp(filePath, { failOn: 'none', limitInputPixels: false })
+    const pipeline = sharp(filePath, { failOn: 'none', limitInputPixels: false })
         .flatten({ background: '#ffffff' })
-        .resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true })
-        .greyscale()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-    if (info.channels !== 1) throw new Error(`Unexpected channel count ${info.channels}`);
+        .resize({ width: maxSide, height: maxSide, fit: 'inside', withoutEnlargement: true });
+    let gray, sat = null, info;
+    if (saturation) {
+        const out = await pipeline.removeAlpha().toColourspace('srgb').raw().toBuffer({ resolveWithObject: true });
+        info = out.info;
+        if (info.channels !== 3) throw new Error(`Unexpected channel count ${info.channels}`);
+        const n = info.width * info.height, d = out.data;
+        gray = new Uint8Array(n);
+        sat = new Uint8Array(n);
+        for (let i = 0, j = 0; i < n; i++, j += 3) {
+            const R = d[j], G = d[j + 1], B = d[j + 2];
+            gray[i] = Math.round(0.2126 * R + 0.7152 * G + 0.0722 * B);
+            sat[i] = Math.max(R, G, B) - Math.min(R, G, B);
+        }
+    } else {
+        const out = await pipeline.greyscale().raw().toBuffer({ resolveWithObject: true });
+        info = out.info;
+        if (info.channels !== 1) throw new Error(`Unexpected channel count ${info.channels}`);
+        gray = out.data;
+    }
     return {
-        gray: data,
+        gray,
+        ...(sat ? { sat } : {}),
         width: info.width,
         height: info.height,
         pixelWidth: meta.width,

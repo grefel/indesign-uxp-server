@@ -164,6 +164,7 @@ export class InDesignMCPServer {
 
             // Image Analysis
             case 'analyze_image_free_space': return await ImageAnalysisHandlers.analyzeImageFreeSpace(args);
+            case 'analyze_image_features': return await ImageAnalysisHandlers.analyzeImageFeatures(args);
             case 'check_motif_collision': return await ImageAnalysisHandlers.checkMotifCollision(args);
 
             // Layout Model

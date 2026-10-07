@@ -16,6 +16,8 @@ import {
     shapeFromPaths, normalizePolygon, polygonBounds, summarizeLines, lineRows,
     tableRow, relativeLines, TABLE_COLS, parseWidths, resolveHyphenation, r2,
 } from '../utils/layoutModel.js';
+import { readCachedFeatures, featureSummary } from '../utils/imageFeatures.js';
+import { placementFromGeometry } from '../utils/imageMask.js';
 
 const MAX_TABLE_ROWS = 240;
 const MAX_SHAPES = 40;
@@ -509,7 +511,7 @@ export async function buildModel(res, cfg, { layer = null } = {}) {
             const sides = edgeSides(it.gb, pb, config.edgeTolerance);
             if (sides) { out.edge = sides; out.bleedOk = reachesBleed(it.gb, sides, buildFormatBleedBox(pb, config.imageBleed)); }
         }
-        if (it.img) out.image = await imageInfo(it.img, config, m.role);
+        if (it.img) out.image = await imageInfo(it.img, config, m.role, it.gb, pb);
         items.push(out);
     }
     items.sort((a, b) => a.bounds[0] - b.bounds[0] || a.bounds[1] - b.bounds[1]);
@@ -534,12 +536,20 @@ function buildFormatBleedBox(pb, ib) {
     return [pb[0] - ib, pb[1] - ib, pb[2] + ib, pb[3] + ib];
 }
 
-async function imageInfo(img, config, role) {
+async function imageInfo(img, config, role, frameBounds, pageBounds) {
     const minPpi = config.roles[role]?.allow?.minPpi ?? config.minPpi;
     const px = (await pixelSize(img.path)) || estimatePixels(img);
     const eppi = Array.isArray(img.eppi) ? img.eppi.map(v => Math.round(v)) : null;
     let freeSpaceCache = false;
     try { freeSpaceCache = !!img.path && fs.existsSync(`${img.path}.freespace.json`); } catch {}
+    // Nur bereits gecachte Merkmale (analyze_image_features), keine neue Analyse
+    let features = null;
+    if (freeSpaceCache) {
+        try {
+            const f = await readCachedFeatures(img.path);
+            if (f) features = featureSummary(f, placementFromGeometry({ imageBounds: img.gb, frameBounds, pageBounds, flip: img.flip }));
+        } catch { /* Cache unlesbar → Hinweis auf das Tool */ }
+    }
     return nonDefault({
         id: img.id,
         type: img.type !== 'Image' ? img.type : null,
@@ -555,7 +565,9 @@ async function imageInfo(img, config, role) {
         scale: img.scale,
         rot: img.rot || null, shear: img.shear || null,
         flip: img.flip && !/^none$/i.test(img.flip) ? img.flip : null,
-        analysis: 'analyze_image_free_space',
+        analysis: features ? 'analyze_image_free_space' : 'analyze_image_free_space, analyze_image_features',
         freeSpaceCache,
+        // focus [x, y, confidence], groundLine [x0, y0, x1, y1] in mm, direction "<dir> <confidence>"
+        features,
     });
 }

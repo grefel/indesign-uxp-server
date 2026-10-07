@@ -1,5 +1,5 @@
 /**
- * Tool definitions: Bildanalyse (Motivmaske, Kollision Text ↔ Motiv)
+ * Tool definitions: Bildanalyse (Motivmaske, Merkmale/Linien, Kollision Text ↔ Motiv)
  */
 
 const maskParams = {
@@ -20,6 +20,21 @@ export const imageAnalysisToolDefinitions = [
                 itemId: { type: 'number', description: 'Id of the graphic frame or of the placed image itself' },
                 ...maskParams,
                 grid: { ...maskParams.grid, default: 32 },
+            },
+            required: ['itemId'],
+        },
+    },
+    {
+        name: 'analyze_image_features',
+        description: 'Focus point and alignment lines of a placed image, from pixel analysis (motif = non-white pixels, white areas enclosed by the motif count as motif). Returns centroid (ink-weighted center of mass), focus (center of interest from edge density, local contrast and saturation with mild center bias; point, region, confidence 0..1, visible in frame), safeCrop (min = focus region + buffer, motif = motif bbox; sides currently cut), principalAxis (PCA of the motif: angle, length, eccentricity 0..1, center, ends), groundLine (bottom contour line the motif stands on, only if near horizontal ±10° and supported, else null: angle, yLeft/yRight at the motif edges, x range, support x range, quality = supported share of motif columns), edges (dominant straight edges, horizontal/vertical first: class, angle, length, strength = contrast 0..1, from/to, norm), extremes (outer motif edges left/right/top/bottom; hard = straight axis-parallel edge usable as alignment line, otherwise a single point such as a tip), direction (facing/movement direction from the tapered end along the principal axis: left|right|up|down|none, confidence 0..1, angle). Positions in page mm for the current placement (flips applied) plus normalized 0..1 of the image bounds; angles in degrees, 0 = horizontal, positive = counter-clockwise. Results are cached in the sidecar <link>.freespace.json.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                itemId: { type: 'number', description: 'Id of the graphic frame or of the placed image itself' },
+                whiteThreshold: maskParams.whiteThreshold,
+                axisTolerance: { type: 'number', description: 'Max deviation in degrees for an edge to be classed horizontal or vertical (0..30)', default: 5 },
+                maxEdges: { type: 'number', description: 'Number of edges returned (0..12)', default: 6 },
+                useCache: maskParams.useCache,
             },
             required: ['itemId'],
         },

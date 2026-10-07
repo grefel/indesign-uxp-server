@@ -14,6 +14,7 @@ import {
     largestFreeRects, resolutionInfo, checkRect, boundsToRect, rectToArray, r1,
     placementFromGeometry, motifRects, unionRect,
 } from '../utils/imageMask.js';
+import { getImageFeatures, normalizeFeatureParams, placeFeatures } from '../utils/imageFeatures.js';
 
 /**
  * UXP-Snippet: bindet `image` (Grafik) und `frame` (Container) zu itemId und
@@ -117,14 +118,19 @@ async function loadImagePlacement(itemId, extraBody = '', extraReturn = '') {
     return ScriptExecutor.executeViaUXP(code);
 }
 
-async function maskFor(info, params, useCache) {
+/** Fehler beim Laden des Links einheitlich übersetzen. */
+async function withLink(info, fn) {
     if (!info.filePath) throw Object.assign(new Error('Graphic has no file link'), { code: 'nolink' });
     try {
-        return await getMotifMask(info.filePath, params, { useCache });
+        return await fn(info.filePath);
     } catch (e) {
         if (e.code === 'ENOENT') throw Object.assign(new Error(`Linked file not found: ${info.filePath} (link status ${info.linkStatus})`), { code: 'missing' });
         throw e;
     }
+}
+
+function maskFor(info, params, useCache) {
+    return withLink(info, f => getMotifMask(f, params, { useCache }));
 }
 
 function cutSides(full, clip) {
@@ -203,6 +209,48 @@ export class ImageAnalysisHandlers {
             cache: mask.cache,
         };
         const warnings = placementWarnings(info, mask);
+        if (warnings.length) result.warnings = warnings;
+        return formatResponse(result, op);
+    }
+
+    /**
+     * Fokuspunkt und Achsen/Linien eines platzierten Bildes in aktueller
+     * Platzierung (Seiten-mm und normiert). Eigenes Tool statt Option von
+     * analyze_image_free_space: andere Fragestellung, Ausgabe bleibt je Tool kompakt.
+     */
+    static async analyzeImageFeatures(args) {
+        const op = 'Analyze Image Features';
+        let itemId, params;
+        try {
+            itemId = parseItemId(args.itemId);
+            params = normalizeFeatureParams(args);
+        } catch (e) { return formatErrorResponse(e.message, op); }
+        const useCache = args.useCache !== false;
+
+        const res = await loadImagePlacement(itemId);
+        if (!res?.success) return formatErrorResponse(res?.error || 'Failed to read image placement', op);
+        const info = res.info;
+
+        let feat;
+        try { feat = await withLink(info, f => getImageFeatures(f, params, { useCache })); }
+        catch (e) {
+            return formatErrorResponse(e.code === 'unsupported' ? { unsupported: true, error: e.message, hint: UNSUPPORTED_HINT, filePath: info.filePath } : e.message, op);
+        }
+        const placement = placementFromInfo(info);
+        const result = {
+            itemId,
+            imageId: info.imageId,
+            frameId: info.frameId,
+            file: info.filePath,
+            units: 'mm; points [x, y]; rects [top, left, bottom, right]; norm = 0..1 of the placed image bounds (page orientation); angles in degrees, 0 = horizontal, positive = counter-clockwise (rising to the right); direction.angle 0 = right, 90 = up, 180 = left',
+            imageBounds: info.imageBounds.map(r1),
+            clip: placement.clip.map(r1),
+            ...placeFeatures(feat, placement, params),
+            pixels: [feat.pixelWidth, feat.pixelHeight],
+            cache: feat.cache,
+        };
+        const warnings = placementWarnings(info, feat);
+        if (placement.flipV && result.groundLine) warnings.push("Image is flipped vertically; groundLine is the motif's original bottom edge, now at the top.");
         if (warnings.length) result.warnings = warnings;
         return formatResponse(result, op);
     }
