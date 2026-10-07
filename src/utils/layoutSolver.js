@@ -359,6 +359,7 @@ export function imageSetups(P, sc) {
     const [mt, ml, mb, mr] = img.norm.motif;
     const mbw = mr - ml, mbh = mb - mt;
     const maxImgW = img.px ? img.px[0] / img.minPpi * 25.4 : Infinity;
+    const allowCut = P.config?.allowMotifCut !== false;
 
     const push = (topo, split, Z, C, bleedSides, kind, scales, anchors) => {
         const Zw = Z.right - Z.left, Zh = Z.bottom - Z.top;
@@ -381,9 +382,9 @@ export function imageSetups(P, sc) {
                 if (bleedSides.some(s => (s === 'top' || s === 'left' ? frame[s] > BB[s] + 0.01 : frame[s] < BB[s] - 0.01))) continue;
                 const motifR = { left: mx, top: my, right: mx + mW, bottom: my + mH };
                 const visible = intersectRect(frame, PB);
-                // Motiv nur an Anschnitt-Seiten beschneiden
+                // Motiv nur an Anschnitt-Seiten beschneiden, mit allowMotifCut: false gar nicht
                 const cutSides = ['top', 'left', 'bottom', 'right'].filter(s => (s === 'top' || s === 'left' ? motifR[s] < visible[s] - 0.05 : motifR[s] > visible[s] + 0.05));
-                if (cutSides.some(s => !bleedSides.includes(s))) continue;
+                if (cutSides.some(s => !allowCut || !bleedSides.includes(s))) continue;
                 const [st, sl, sb, sr] = img.norm.safe;
                 const safeR = { left: ib.left + sl * imgW, top: ib.top + st * imgH, right: ib.left + sr * imgW, bottom: ib.top + sb * imgH };
                 if (safeR.left < visible.left - 0.05 || safeR.top < visible.top - 0.05 || safeR.right > visible.right + 0.05 || safeR.bottom > visible.bottom + 0.05) continue;
@@ -617,7 +618,9 @@ export function buildScene(cand, P) {
         if (tv) {
             style.size = tv.pt;
             style.leading = tv.ld;
-            if (T.metrics?.cap) style.capHeight = T.metrics.cap * tv.pt / T.ref;
+            for (const [k, m] of [['capHeight', 'cap'], ['ascGlyph', 'ascGlyph'], ['descGlyph', 'descGlyph']]) {
+                if (T.metrics?.[m]) style[k] = T.metrics[m] * tv.pt / T.ref;
+            }
         }
         return { id: t.id, role: t.role, frame: t.frame, overset: t.overset || 0, lines: t.lines, style, original: T.original };
     });

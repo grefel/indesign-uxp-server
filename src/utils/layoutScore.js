@@ -35,6 +35,8 @@ import { deepMerge } from './layoutModel.js';
  * @property {number} [ink] Schwärze 0..1 (Default 1), s. colorInk()
  * @property {number} [accent] Farbsättigung 0..1 (Default 0), s. colorInk()
  * @property {number} [capHeight] Versalhöhe mm (Default size × capHeightRatio)
+ * @property {number} [ascGlyph] Höhe einer Oberlängen-Glyphe (d) über der Grundlinie, mm (Default size × ascenderRatio)
+ * @property {number} [descGlyph] Tiefe einer Unterlängen-Glyphe (p) unter der Grundlinie, mm (Default size × descenderRatio)
  *
  * @typedef {object} SceneElement Textelement
  * @property {string|number} id
@@ -73,6 +75,9 @@ export const SCORING_DEFAULTS = {
     sourceLayer: null,
     // Versalhöhe / Schriftgrad, wenn style.capHeight fehlt (Noto Sans 0,714)
     capHeightRatio: 0.7,
+    // Oberlänge (d) bzw. Unterlänge (p) / Schriftgrad, wenn style.ascGlyph/descGlyph fehlen (Noto Sans 0,76 / 0,24)
+    ascenderRatio: 0.76,
+    descenderRatio: 0.24,
     // Raster der Motivmaske für H8/S-Kriterien (Zellen auf der längeren Bildseite)
     maskGrid: 64,
     rules: {
@@ -81,7 +86,8 @@ export const SCORING_DEFAULTS = {
         H3: { enabled: true },
         H4: { enabled: true, tolerance: 0.01 },
         H5: { enabled: true },
-        H6: { enabled: true, tolerance: 0.1 },
+        // motifGap: Rahmenkante zählt nur, wenn das Motiv näher als motifGap mm an ihr liegt (sonst weiß und unsichtbar)
+        H6: { enabled: true, tolerance: 0.1, motifGap: 1 },
         H7: { enabled: true, tolerance: 0.1 },
         H8: { enabled: true, minGap: 1 },
         H9: { enabled: true, tolerance: 0.05 },
@@ -105,9 +111,11 @@ export const SCORING_DEFAULTS = {
     grouping: { targetRatio: 1.5, minRatio: 0.75 },
     // textCoverage: Tintenanteil einer Zeilenbox (Glyphen statt Box), damit Text und Motivfläche × Tinte vergleichbar sind
     hierarchy: { textCoverage: 0.35, boldFactor: 1.4, sizeRef: 10, sizeExponent: 0.5, accentFactor: 1.5, imageInk: 0.5 },
-    balance: { center: [0.5, 0.45], maxDistance: 0.25 },
-    whitespace: { module: 'gap', holeMax: 0.2, gridMm: 1, holeWeight: 0.5 },
-    imageShare: { range: [0.35, 0.55], soft: 0.2, roles: ['image'] },
+    // Schwerpunkt-Abweichung je Achse (Anteil der Seite), bei der S5 = 0 ist; horizontal enger als vertikal
+    balance: { center: [0.5, 0.5], maxDistance: [0.2, 0.3] },
+    whitespace: { module: 'gap', holeMax: 0.12, holeSoft: 0.12, gridMm: 1, holeWeight: 0.5 },
+    // zero: Anteil mit S7 = 0, linear bis range[0]; über range[1] weich bis 0 über soft
+    imageShare: { zero: 0.05, range: [0.35, 0.55], soft: 0.2, roles: ['image'] },
     typography: {
         ragMax: 0.15, shortLastLine: 0.2, hyphenPenalty: 0.15,
         headlineBalance: [0.3, 0.75], bodyRoles: ['description'], charsPerLine: [30, 60], charsSoft: 15,
@@ -157,6 +165,9 @@ export function validateScoring(s) {
     for (const k of Object.keys(s.rules)) if (!RULES.includes(k)) throw new Error(`config.scoring.rules: unknown rule '${k}'`);
     const range = (v, label) => { if (!Array.isArray(v) || v.length !== 2 || !(v[0] <= v[1])) throw new Error(`config.scoring.${label} must be [min, max]`); };
     range(s.imageShare.range, 'imageShare.range');
+    if (!(s.imageShare.zero >= 0 && s.imageShare.zero < s.imageShare.range[0])) throw new Error('config.scoring.imageShare.zero must be >= 0 and < range[0]');
+    if (typeof s.balance.maxDistance === 'number') s.balance.maxDistance = [s.balance.maxDistance, s.balance.maxDistance];
+    if (!Array.isArray(s.balance.maxDistance) || s.balance.maxDistance.length !== 2 || !s.balance.maxDistance.every(v => v > 0)) throw new Error('config.scoring.balance.maxDistance must be [x, y] > 0');
     range(s.typography.charsPerLine, 'typography.charsPerLine');
     range(s.typography.headlineBalance, 'typography.headlineBalance');
     if (!Array.isArray(s.alignment.wishes)) throw new Error('config.scoring.alignment.wishes must be an array');
@@ -198,17 +209,46 @@ export function colorInk(c) {
 
 const DASH_START = /^\s*[-–—‒]/;
 const BOLD = /(bold|black|heavy|semi|demi|fett|halbfett|extra)/i;
+// Glyphen über der Versalhöhe bzw. unter der Grundlinie (Text in NFD, Akzente als Kombinationszeichen)
+const ASC_GLYPH = /[bdfhklijß()[\]{}|/]|\p{Ll}[\u0300-\u036f]/u;
+const ACCENT_CAP = /\p{Lu}[\u0300-\u036f]/u;
+const DESC_GLYPH = /[gjpqyQ(),;[\]{}|_µ]/u;
+// Versal mit Akzent (Ä) ≈ 1,26 × Versalhöhe (Noto Sans)
+const ACCENT_CAP_FACTOR = 1.26;
+
+/**
+ * Glyphen-Box einer Zeile: oben Grundlinie − max(Versalhöhe, Oberlänge falls
+ * Oberlängen-Glyphen vorkommen), unten Grundlinie + Unterlänge falls
+ * Unterlängen-Glyphen vorkommen. Enger als die Zeilenbox (Ascent/Descent).
+ */
+function glyphRect(l, m) {
+    const t = String(l.text ?? '').normalize('NFD');
+    let up = m.cap;
+    if (ASC_GLYPH.test(t)) up = Math.max(up, m.asc);
+    if (ACCENT_CAP.test(t)) up = Math.max(up, m.cap * ACCENT_CAP_FACTOR);
+    const down = DESC_GLYPH.test(t) ? m.desc : 0;
+    return { top: Math.max(l.top, l.baseline - up), bottom: Math.min(l.bottom, l.baseline + down), left: l.x, right: l.x + l.width };
+}
 
 function prepare(scene, sc) {
     const fmt = scene.format;
     const page = boundsToRect(fmt.page.bounds);
     const typeArea = boundsToRect(fmt.typeArea);
     const texts = (scene.elements || []).map(el => {
-        const lines = (el.lines || []).map((l, i) => ({ ...l, i, rect: { top: l.top, bottom: l.bottom, left: l.x, right: l.x + l.width } }));
-        const vis = lines.filter(l => String(l.text ?? '').trim() !== '');
         const st = el.style || {};
+        const em = st.size ? st.size * PT_MM : null;
+        const capHeight = st.capHeight ?? (em ? em * sc.capHeightRatio : null);
+        const gm = em || capHeight != null ? {
+            cap: capHeight ?? 0,
+            asc: st.ascGlyph ?? (em ? em * sc.ascenderRatio : capHeight),
+            desc: st.descGlyph ?? (em ? em * sc.descenderRatio : 0),
+        } : null;
+        const lines = (el.lines || []).map((l, i) => {
+            const rect = { top: l.top, bottom: l.bottom, left: l.x, right: l.x + l.width };
+            return { ...l, i, rect, glyph: gm ? glyphRect(l, gm) : rect };
+        });
+        const vis = lines.filter(l => String(l.text ?? '').trim() !== '');
         const block = unionRect(vis.map(l => l.rect));
-        const capHeight = st.capHeight ?? (st.size ? st.size * PT_MM * sc.capHeightRatio : null);
         return { ...el, kind: 'text', lines, vis, block, capHeight, style: st };
     });
     const images = (scene.images || []).map(im => {
@@ -230,9 +270,9 @@ function prepare(scene, sc) {
     return { page, typeArea, texts, images, fmt };
 }
 
-/** Elementare Rechtecke eines Blocks: Zeilenboxen bzw. sichtbare Motivzellen (Rahmen, wenn sichtbar). */
+/** Elementare Rechtecke eines Blocks: Glyphen-Boxen der Zeilen bzw. sichtbare Motivzellen (Rahmen, wenn sichtbar). */
 function partsOf(b) {
-    if (b.kind === 'text') return b.vis.map(l => l.rect);
+    if (b.kind === 'text') return b.vis.map(l => l.glyph);
     if (b.frameVisible && b.visible) return [b.visible];
     return b.motif;
 }
@@ -283,6 +323,24 @@ function adjacentGaps(blocks) {
 }
 
 // ------------------------------------------------------------------ Harte Regeln
+
+/**
+ * H6: Rahmenkanten, an denen Bildinhalt sichtbar ist. Ohne Maske oder mit
+ * frameVisible alle Kanten; sonst nur Kanten, denen das sichtbare Motiv näher
+ * als gap kommt (angeschnitten oder knapp davor). Ein nicht weißer
+ * Bildhintergrund liegt in der Maske selbst als Motiv bis an die Bildkante.
+ */
+function seenEdges(im, vis, page, gap) {
+    const all = { top: true, left: true, bottom: true, right: true };
+    if (im.frameVisible || !Array.isArray(im.motifRects)) return all;
+    const mb = im.motifBox;
+    const clip = intersectRect(vis, page);
+    if (!mb || !clip) return { top: false, left: false, bottom: false, right: false };
+    return {
+        top: mb.top - clip.top < gap, left: mb.left - clip.left < gap,
+        bottom: clip.bottom - mb.bottom < gap, right: clip.right - mb.right < gap,
+    };
+}
 
 function checkRules(P, scene, sc) {
     const cfg = scene.config || {};
@@ -343,18 +401,19 @@ function checkRules(P, scene, sc) {
     }
 
     if (on('H6')) {
-        const tol = R.H6.tolerance ?? 0.1;
+        const tol = R.H6.tolerance ?? 0.1, gap = R.H6.motifGap ?? 1;
         const pg = P.page, m = P.fmt.margins, bb = boundsToRect(P.fmt.imageBleedBox);
         const bleed = [pg.top - bb.top, pg.left - bb.left, bb.bottom - pg.bottom, bb.right - pg.right];
         for (const im of P.images) {
             const ib = boundsToRect(im.imageBounds || im.frame);
             const vis = intersectRect(im.frameRect, ib);
             if (!vis) continue;
+            const seen = seenEdges(im, vis, pg, gap);
             // Abstand der sichtbaren Kante zur Seitenkante, nach innen positiv
             const d = [vis.top - pg.top, vis.left - pg.left, pg.bottom - vis.bottom, pg.right - vis.right];
             const bad = [];
             ['top', 'left', 'bottom', 'right'].forEach((s, k) => {
-                if (d[k] < m[k] - tol && d[k] > -bleed[k] + tol) bad.push(`${s} ${rd(d[k], 2)} mm from page edge`);
+                if (seen[s] && d[k] < m[k] - tol && d[k] > -bleed[k] + tol) bad.push(`${s} ${rd(d[k], 2)} mm from page edge`);
             });
             if (bad.length) v('H6', im.id, `image edge neither ≥ margin nor bleeding ≥ ${rd(Math.min(...bleed), 2)} mm: ${bad.join(', ')}`);
         }
@@ -368,6 +427,14 @@ function checkRules(P, scene, sc) {
             const need = boundsToRect(sc0), vis = im.visible;
             const cut = !vis ? ['all'] : ['top', 'left', 'bottom', 'right'].filter((s, k) => (k < 2 ? need[s] < vis[s] - tol : need[s] > vis[s] + tol));
             if (cut.length) v('H7', im.id, `safe crop cut at ${cut.join(', ')}`);
+        }
+        if (cfg.allowMotifCut === false) {
+            for (const im of P.images) {
+                if (!im.motifBox || !im.visible) continue;
+                const mb = im.motifBox, vis = im.visible;
+                const cut = ['top', 'left', 'bottom', 'right'].filter((s, k) => (k < 2 ? mb[s] - vis[s] : vis[s] - mb[s]) <= tol);
+                if (cut.length) v('H7', im.id, `motif cut at ${cut.join(', ')} (allowMotifCut: false)`);
+            }
         }
     }
 
@@ -389,10 +456,10 @@ function checkRules(P, scene, sc) {
             const A = P.texts[i], B = P.texts[j];
             let worst = 0;
             for (const a of A.vis) for (const b of B.vis) {
-                const x = intersectRect(a.rect, b.rect);
+                const x = intersectRect(a.glyph, b.glyph);
                 if (x) worst = Math.max(worst, Math.min(x.bottom - x.top, x.right - x.left));
             }
-            if (worst > tol) v('H9', [A.id, B.id], `line boxes overlap by ${rd(worst, 2)} mm`);
+            if (worst > tol) v('H9', [A.id, B.id], `glyph boxes overlap by ${rd(worst, 2)} mm`);
         }
     }
 
@@ -680,16 +747,21 @@ function scoreHierarchy(W, cfg, detail) {
     return { v: (rho + 1) / 2, note: `ρ ${rd(rho, 2)}, by weight: ${order.join(' > ')}` };
 }
 
-/** S5 Balance: gewichteter Schwerpunkt gegen optische Mitte. */
+/**
+ * S5 Balance: Gewichtsverteilung links/rechts und oben/unten als gewichteter
+ * Schwerpunkt (Momentengleichgewicht um center). Abweichung je Achse relativ
+ * zu maxDistance [x, y], elliptisch kombiniert; vertikal toleranter.
+ */
 function scoreBalance(P, W, sc, detail) {
     const tot = W.reduce((s, e) => s + e.w, 0);
     if (!tot) return { v: null, note: 'no weighted elements' };
     const cx = W.reduce((s, e) => s + e.c[0] * e.w, 0) / tot, cy = W.reduce((s, e) => s + e.c[1] * e.w, 0) / tot;
     const pg = P.page, Wd = pg.right - pg.left, H = pg.bottom - pg.top;
     const tx = pg.left + sc.balance.center[0] * Wd, ty = pg.top + sc.balance.center[1] * H;
-    const d = Math.hypot((cx - tx) / Wd, (cy - ty) / H);
+    const [mx, my] = sc.balance.maxDistance;
+    const d = Math.hypot((cx - tx) / Wd / mx, (cy - ty) / H / my);
     if (detail) detail.centroid = { at: [rd(cx, 1), rd(cy, 1)], target: [rd(tx, 1), rd(ty, 1)] };
-    return { v: clamp01(1 - d / sc.balance.maxDistance), note: `centroid ${rd((cx - pg.left) / Wd * 100, 0)} %/${rd((cy - pg.top) / H * 100, 0)} %` };
+    return { v: clamp01(1 - d), note: `centroid ${rd((cx - pg.left) / Wd * 100, 0)} %/${rd((cy - pg.top) / H * 100, 0)} %` };
 }
 
 /** Größtes freies Rechteck auf einem Raster (Histogramm-Verfahren). */
@@ -735,20 +807,20 @@ function scoreWhitespace(P, sc, gaps, blocks, detail) {
     }
     const best = largestFree(free, rows, cols);
     const frac = best ? best.a / (rows * cols) : 0;
-    const hole = 1 - clamp01((frac - ws.holeMax) / ws.holeMax);
+    const hole = 1 - clamp01((frac - ws.holeMax) / (ws.holeSoft || ws.holeMax));
     if (detail && best) detail.hole = { bounds: [ta.top + best.r0 * ch, ta.left + best.c0 * cw, ta.top + (best.r1 + 1) * ch, ta.left + (best.c1 + 1) * cw].map(v => rd(v, 1)), share: rd(frac, 2) };
     const v = (1 - ws.holeWeight) * pinch + ws.holeWeight * hole;
     return { v, note: `${pinched.length ? `pinched ${pinched.join('/')} mm` : 'no pinched gaps'}, largest hole ${rd(frac * 100, 0)} %` };
 }
 
-/** S7 Bildanteil: sichtbare Motivfläche / Satzspiegelfläche im Zielbereich. */
+/** S7 Bildanteil: sichtbare Motivfläche / Satzspiegelfläche; 0 bei zero, linear steigend bis range[0], über range[1] weich fallend. */
 function scoreImageShare(P, sc) {
     const imgs = P.images.filter(im => sc.imageShare.roles.includes(im.role));
     if (!imgs.length) return { v: null, note: 'no image' };
     if (imgs.every(im => !(im.motifRects || []).length)) return { v: null, note: 'no motif mask' };
     const share = imgs.reduce((s, im) => s + im.motifArea, 0) / area(P.typeArea);
-    const [lo, hi] = sc.imageShare.range, soft = sc.imageShare.soft;
-    const v = share < lo ? clamp01(1 - (lo - share) / soft) : share > hi ? clamp01(1 - (share - hi) / soft) : 1;
+    const { zero, soft } = sc.imageShare, [lo, hi] = sc.imageShare.range;
+    const v = share < lo ? clamp01((share - zero) / (lo - zero)) : share > hi ? clamp01(1 - (share - hi) / soft) : 1;
     return { v, note: `motif ${rd(share * 100, 0)} % of type area` };
 }
 
@@ -809,7 +881,10 @@ function scoreTypography(P, sc, cfg) {
     return { v: mean(parts), note: notes.join(', ') };
 }
 
-/** S9 Lesefluss: Z-Muster (Zeilen nach Überlappung, dann links→rechts) gegen readingOrder. */
+/**
+ * S9 Lesefluss: Z-Muster (Zeilen nach Überlappung, dann links→rechts) gegen
+ * readingOrder. Rollen mit readingOrderFlexible erzeugen keine Inversionen.
+ */
 function scoreReadingFlow(P, sc, cfg) {
     const ro = P.texts.filter(t => t.vis.length && Number.isFinite(cfg.roles?.[t.role]?.readingOrder));
     if (ro.length < 2) return { v: null, note: 'fewer than 2 texts with readingOrder' };
@@ -825,6 +900,7 @@ function scoreReadingFlow(P, sc, cfg) {
     for (let i = 0; i < ro.length; i++) for (let j = 0; j < ro.length; j++) {
         if (i === j) continue;
         const a = ro[i], b = ro[j];
+        if (cfg.roles[a.role].readingOrderFlexible || cfg.roles[b.role].readingOrderFlexible) continue;
         if (!(cfg.roles[a.role].readingOrder < cfg.roles[b.role].readingOrder)) continue;
         pairs++;
         if (!before(a, b)) { inv++; bad.push(`${b.role} before ${a.role}`); }

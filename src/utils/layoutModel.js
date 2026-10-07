@@ -22,10 +22,12 @@ export const DEFAULT_CONFIG = {
     minPpi: 200,
     // Toleranz, ab der ein Rahmen als „an der Seitenkante“ gilt
     edgeTolerance: 0.1,
+    // Motiv darf vom Bildrahmen angeschnitten werden (safeCrop/H7 gilt weiter); false: Solver schneidet nicht, score_layout meldet H7
+    allowMotifCut: true,
     // Standardabstände = Basis (kleinster Seitenrand oder Zahl in mm) × Faktor
     spacing: { base: 'minMargin', factors: { margin: 1, gap: 0.5 } },
     // Ebenen, die get_layout_model ohne layer-Parameter ignoriert
-    sourceLayers: { exclude: '^(Layoutvorschlag|Variante?|Test_)' },
+    sourceLayers: { exclude: '^(Layoutvorschlag|Variante?|Test_|Solver|Manuell)' },
     hyphenation: {
         default: ['off', 'on', 'strict'],
         variants: {
@@ -113,10 +115,12 @@ export function validateConfig(cfg) {
     num(cfg.imageBleed, 'imageBleed');
     num(cfg.minPpi, 'minPpi');
     num(cfg.edgeTolerance, 'edgeTolerance');
+    if (typeof cfg.allowMotifCut !== 'boolean') throw new Error('config.allowMotifCut must be true or false');
     if (!isObj(cfg.roles)) throw new Error('config.roles must be an object { roleName: { rank, readingOrder, allow } }');
     for (const [name, def] of Object.entries(cfg.roles)) {
         if (!isObj(def)) throw new Error(`config.roles.${name} must be an object`);
         if (def.allow !== undefined && !isObj(def.allow)) throw new Error(`config.roles.${name}.allow must be an object`);
+        if (def.readingOrderFlexible !== undefined && typeof def.readingOrderFlexible !== 'boolean') throw new Error(`config.roles.${name}.readingOrderFlexible must be true or false`);
         for (const k of ['pointSize', 'leading']) {
             const v = def.allow?.[k];
             if (v !== undefined && v !== false && !(typeof v === 'number' && v >= 0 && v < 1)) {

@@ -179,14 +179,26 @@ test('H5 effektive Auflösung', () => {
     assert.deepEqual(rules(scoreLayout(s)), ['H5']);
 });
 
-test('H6 Bildkante: Rand oder Anschnitt, nichts dazwischen', () => {
-    const motif = [17, 6, 50, 38];
-    const mk = frame => baseScene({ images: [image(10, frame, motif, { features: features(motif) })] });
+test('H6 Bildkante: Rand oder Anschnitt, nichts dazwischen – nur sichtbare Kanten', () => {
+    // Motiv links angeschnitten (reicht über den Rahmen hinaus), safeCrop weit innen
+    const cutM = [17, -5, 50, 38];
+    const mk = (frame, motif = cutM, extra = {}) => baseScene({ images: [{ ...image(10, frame, motif, { features: features(motif, { safe: [20, 10, 45, 30] }) }), ...extra }] });
     assert.equal(scoreLayout(mk([12, -3, 55, 40])).valid, true); // links randabfallend bis Anschnitt
     assert.equal(scoreLayout(mk([12, 5, 55, 40])).valid, true); // links am Satzspiegel
-    assert.deepEqual(rules(scoreLayout(mk([12, 2, 55, 40]))), ['H6']); // Blitzer
-    assert.deepEqual(rules(scoreLayout(mk([12, -1, 55, 40]))), ['H6']); // nicht bis Anschnitt
-    assert.deepEqual(rules(scoreLayout(mk([12, -3, 58, 40]))), ['H6']); // unten 2 mm
+    assert.deepEqual(rules(scoreLayout(mk([12, 2, 55, 40]))), ['H6']); // Blitzer mit angeschnittenem Motiv
+    assert.deepEqual(rules(scoreLayout(mk([12, -1, 55, 40]))), ['H6']); // Motiv an der Seitenkante, Rahmen nicht bis Anschnitt
+    assert.deepEqual(rules(scoreLayout(mk([12, -3, 58, 40], [17, -5, 60, 38]))), ['H6']); // unten angeschnitten, 2 mm vor der Seitenkante
+    // Freisteller auf Weiß: Rahmenkante im Randbereich ist unsichtbar
+    const free = [17, 6, 50, 38];
+    assert.equal(scoreLayout(mk([12, 2, 55, 40], free)).valid, true);
+    assert.equal(scoreLayout(mk([12, -3, 58, 40], free)).valid, true);
+    // Motiv knapp (0,5 mm) vor der Rahmenkante zählt als sichtbar
+    assert.deepEqual(rules(scoreLayout(mk([12, 2, 55, 40], [17, 2.5, 50, 38]))), ['H6']);
+    // Rahmen sichtbar (Bild mit Hintergrund) oder ohne Maske: jede Kante zählt
+    assert.deepEqual(rules(scoreLayout(mk([12, 2, 55, 40], free, { frameVisible: true }))), ['H6']);
+    const noMask = mk([12, 2, 55, 40], free);
+    noMask.images[0].motifRects = null;
+    assert.ok(rules(scoreLayout(noMask)).includes('H6'));
     // Bild kleiner als Rahmen: die sichtbare Bildkante zählt
     const s = mk([12, -3, 55, 40]);
     s.images[0].imageBounds = [12, 1, 55, 40];
@@ -213,10 +225,25 @@ test('H8 Mindestabstand Text ↔ Motiv, abschaltbar', () => {
     assert.ok(scoreLayout(n).skipped.some(x => x.rule === 'H8'));
 });
 
-test('H9 Textblöcke überlappen nicht', () => {
+test('H9 Textblöcke überlappen nicht (Glyphen-Boxen statt Zeilenboxen)', () => {
     const s = baseScene();
     s.elements[2] = text(3, 'price', 42, 25, [26]);
     assert.ok(rules(scoreLayout(s)).includes('H9'));
+    // Preis 24 pt 1 mm unter der letzten Beschreibungszeile: Zeilenboxen überlappen, Glyphen nicht
+    const near = (lastText, gap = 1) => {
+        const n = baseScene();
+        n.elements[1] = text(2, 'description', 42, 17, [28, 27, 28, 20], { texts: ['Wort Wort Wort', 'Wort Wort Wort', 'Wort Wort Wort', lastText] });
+        const bl = n.elements[1].lines.at(-1).baseline;
+        const p = text(3, 'price', 42, 0, [26], { texts: ['67,99 €'] });
+        const dy = bl + gap + 24 * PT_MM * 0.7 - p.lines[0].baseline;
+        for (const l of p.lines) { l.top += dy; l.bottom += dy; l.baseline += dy; }
+        n.elements[2] = p;
+        assert.ok(p.lines[0].top < n.elements[1].lines.at(-1).bottom - 1, 'Zeilenboxen überlappen');
+        return rules(scoreLayout(n));
+    };
+    assert.ok(!near('Wort Wort').includes('H9'));
+    // Unterlängen (g, Komma) der letzten Zeile reichen in die Versalhöhe des Preises
+    assert.ok(near('gelb, grau', 0.4).includes('H9'));
 });
 
 test('H10 Strich am Zeilenanfang und kurze Trennfragmente', () => {
@@ -276,12 +303,14 @@ test('S2 Rhythmus: Lücken als Modul-Vielfache besser als krumme', () => {
             text(3, 'price', 42, 0, [26]),
         ],
     });
+    // Lücke zwischen Glyphen: Text 'Wort …' ohne Unter-/Oberlängen, also Grundlinie bis Versalhöhe
+    const cap = e => e.style.size * PT_MM * 0.7;
     const stack = (g1, g2) => {
         const s = mk();
         const [h, d, p] = s.elements;
-        const move = (e, top) => { const dy = top - e.lines[0].top; for (const l of e.lines) { l.top += dy; l.bottom += dy; l.baseline += dy; } };
-        move(d, h.lines.at(-1).bottom + g1);
-        move(p, d.lines.at(-1).bottom + g2);
+        const move = (e, bl) => { const dy = bl - e.lines[0].baseline; for (const l of e.lines) { l.top += dy; l.bottom += dy; l.baseline += dy; } };
+        move(d, h.lines.at(-1).baseline + g1 + cap(d));
+        move(p, d.lines.at(-1).baseline + g2 + cap(p));
         return s;
     };
     const good = S(stack(2.5, 2.5), 'S2'), bad = S(stack(1.3, 3.8), 'S2');
@@ -307,12 +336,20 @@ test('S4 Hierarchie: Gewicht passend zum Rang besser als umgekehrt', () => {
     assert.ok(S(good, 'S4') > S(bad, 'S4'), `${S(good, 'S4')} vs ${S(bad, 'S4')}`);
 });
 
-test('S5 Balance: Schwerpunkt mittig besser als in der Ecke', () => {
+test('S5 Balance: Schwerpunkt mittig besser als in der Ecke; horizontal strenger als vertikal', () => {
     const corner = baseScene({
         elements: [text(1, 'headline', 5, 5, [20]), text(2, 'description', 5, 12, [20, 20]), text(3, 'price', 5, 20, [20])],
         images: [image(10, [5, 30, 20, 45], [6, 31, 19, 44], { features: features([6, 31, 19, 44]) })],
     });
     assert.ok(S(baseScene(), 'S5') > S(corner, 'S5'));
+    // ein Textblock, Schwerpunkt um 10 % der Seite verschoben (Seite 75 × 60 mm)
+    const h = 12 * 0.3775 + 12 * 0.1033;
+    const one = (cx, cy) => baseScene({ elements: [text(1, 'headline', cx - 10, cy - h / 2, [20])], images: [] });
+    const centered = S(one(37.5, 30), 'S5'), right = S(one(45, 30), 'S5'), down = S(one(37.5, 36), 'S5');
+    assert.ok(centered > 0.98, `${centered}`);
+    assert.ok(down > right + 0.1, `${down} vs ${right}`);
+    // maxDistance als Zahl gilt für beide Achsen
+    assert.deepEqual(scoringConfig({ scoring: { balance: { maxDistance: 0.25 } } }).balance.maxDistance, [0.25, 0.25]);
 });
 
 test('S6 Weißraum: eingeklemmte Lücke und großes Loch kosten', () => {
@@ -326,12 +363,30 @@ test('S6 Weißraum: eingeklemmte Lücke und großes Loch kosten', () => {
         images: [image(10, [5, 40, 20, 55], [6, 41, 19, 54], { features: features([6, 41, 19, 54]) })],
     });
     assert.ok(S(hole, 'S6') < S(s, 'S6'));
+    // Loch über holeMax + holeSoft (Default 12 % + 12 %) zählt voll, größere Schwelle mildert
+    const r = scoreLayout(hole, { detail: true });
+    assert.ok(r.detail.hole.share > 0.24, `${r.detail.hole.share}`);
+    assert.ok(r.breakdown.S6.v <= 0.5 + 1e-9, `${r.breakdown.S6.v}`);
+    const lax = deepMerge(CONFIG, { scoring: { whitespace: { holeMax: 0.5 } } });
+    assert.ok(S({ ...hole, config: lax }, 'S6') > S(hole, 'S6'));
 });
 
-test('S7 Bildanteil im Zielbereich; ohne Bild null und nicht gewichtet', () => {
+test('S7 Bildanteil gleitend (0 bei 5 %, 1 ab 35 %); ohne Bild null und nicht gewichtet', () => {
     const big = baseScene(); // Motiv 33 × 32 mm ≈ 32 % des Satzspiegels
     const small = baseScene({ images: [image(10, [12, -3, 55, 40], [30, 20, 40, 30], { features: features([30, 20, 40, 30]) })] });
     assert.ok(S(big, 'S7') > S(small, 'S7'));
+    // Satzspiegel 50 × 65 mm = 3250 mm²; Motiv 40 mm hoch, Breite für den Zielanteil
+    const share = f => {
+        const w = 3250 * f / 40;
+        return S(baseScene({ images: [image(10, [10, -3, 55, 75], [12, 0, 52, w], { features: features([12, 0, 52, w]) })] }), 'S7');
+    };
+    const vals = [0.04, 0.05, 0.1, 0.2, 0.3, 0.35, 0.5].map(share);
+    assert.equal(vals[0], 0);
+    assert.ok(vals[1] < 0.02, `${vals[1]}`);
+    for (let i = 1; i < vals.length; i++) assert.ok(vals[i] >= vals[i - 1], `monoton ${vals}`);
+    assert.ok(Math.abs(vals[3] - 0.5) < 0.03, `20 % → ${vals[3]}`);
+    assert.ok(vals[5] > 0.98 && vals[6] === 1, `${vals}`);
+    assert.throws(() => scoringConfig({ scoring: { imageShare: { zero: 0.4 } } }), /imageShare.zero/);
     const none = baseScene({ images: [] });
     const r = scoreLayout(none);
     assert.equal(r.breakdown.S7.v, null);
@@ -352,6 +407,21 @@ test('S9 Lesefluss: Preis vor Beschreibung ist eine Inversion', () => {
     inv.elements[2] = text(3, 'price', 42, 17, [26]);
     assert.equal(S(baseScene(), 'S9'), 1);
     assert.ok(S(inv, 'S9') < 1);
+    // Preis in der Lesefolge flexibel: keine Inversion
+    inv.config = deepMerge(CONFIG, { roles: { price: { readingOrderFlexible: true } } });
+    assert.equal(S(inv, 'S9'), 1);
+});
+
+test('allowMotifCut: false meldet angeschnittenes Motiv als H7, true nicht', () => {
+    const motif = [17, -5, 50, 38];
+    const s = baseScene({ images: [image(10, [12, -3, 55, 40], motif, { features: features(motif, { safe: [20, 10, 45, 30] }) })] });
+    assert.equal(scoreLayout(s).valid, true, JSON.stringify(scoreLayout(s).violations));
+    s.config = deepMerge(CONFIG, { allowMotifCut: false });
+    const r = scoreLayout(s);
+    assert.deepEqual(rules(r), ['H7']);
+    assert.match(r.violations[0].detail, /motif cut at left/);
+    // Freisteller ohne Anschnitt bleibt gültig
+    assert.equal(scoreLayout({ ...baseScene(), config: s.config }).valid, true);
 });
 
 test('S10 Blickrichtung: zum Text 1, weg 0, unsicher neutral', () => {
