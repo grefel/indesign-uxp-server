@@ -27,7 +27,7 @@ const MEASURE_HEIGHT = 1000; // mm, Höhe der Messrahmen in der Breiten-Tabelle
 let lastDocPath = null;
 
 /** Eigenschaften für die Rollen-Zuordnung (identisch in Modell und Mess-Tools). */
-const ROLE_PROPS_SNIPPET = `
+export const ROLE_PROPS_SNIPPET = `
             function __roleProps(it) {
                 const type = it.constructor.name;
                 let g = null;
@@ -51,7 +51,7 @@ const ROLE_PROPS_SNIPPET = `
 `;
 
 /** Messrahmen vorbereiten, skalieren, Trennvariante anwenden; Zeilen kompakt lesen. */
-const MEASURE_SNIPPET = `
+export const MEASURE_SNIPPET = `
             const { AutoSizingTypeEnum: __AS, VerticalJustification: __VJ, TextWrapModes: __TW } = require('indesign');
             function __prepare(f) {
                 const t = f.textFramePreferences;
@@ -111,18 +111,13 @@ function estimatePixels(img) {
 
 const nonDefault = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false));
 
-export class LayoutModelHandlers {
-    /**
-     * Kompaktes Layout-Modell einer Seite: Format, aufgelöste Konfiguration,
-     * Items mit Rolle, Form, Stil, Zeilen-Kurzinfo und Bild-Basisdaten.
-     */
-    static async getLayoutModel(args = {}) {
-        const op = 'Get Layout Model';
-        const pageIndex = args.pageIndex ?? 0;
-        if (!Number.isInteger(pageIndex) || pageIndex < 0) return formatErrorResponse('pageIndex must be an integer >= 0', op);
-        const layer = typeof args.layer === 'string' && args.layer.trim() ? args.layer : null;
-
-        const code = `
+/**
+ * UXP-Skript für get_layout_model. extra = Skriptteil, der nach dem Lesen der
+ * Seite im selben Roundtrip läuft (mm gepinnt, Helfer im Scope) und `__extra`
+ * setzen kann; dessen Wert kommt als `extra` zurück (z. B. Breiten-Tabellen des Solvers).
+ */
+export function layoutModelCode(pageIndex, extra = '') {
+    return `
             if (app.documents.length === 0) return { success: false, error: 'No document open' };
             const doc = app.activeDocument;
             const { ScriptLanguage, AutoSizingTypeEnum } = require('indesign');
@@ -281,11 +276,25 @@ export class LayoutModelHandlers {
                 const layers = doc.layers.everyItem().getElements().map(l => [l.name, l.visible, l.locked]);
                 let fonts = [];
                 try { fonts = doc.fonts.everyItem().getElements().map(f => [String(f.name).replace(/\\t/g, ' '), String(f.status)]); } catch (e) {}
-                return { success: true, docName: doc.name, docPath, modified: doc.modified, fmt, layers, items, metrics, colors, fonts };
+                let __extra;
+                ${extra}
+                return { success: true, docName: doc.name, docPath, modified: doc.modified, fmt, layers, items, metrics, colors, fonts, extra: __extra };
             `)}
         `;
+}
 
-        const res = await ScriptExecutor.executeViaUXP(code);
+export class LayoutModelHandlers {
+    /**
+     * Kompaktes Layout-Modell einer Seite: Format, aufgelöste Konfiguration,
+     * Items mit Rolle, Form, Stil, Zeilen-Kurzinfo und Bild-Basisdaten.
+     */
+    static async getLayoutModel(args = {}) {
+        const op = 'Get Layout Model';
+        const pageIndex = args.pageIndex ?? 0;
+        if (!Number.isInteger(pageIndex) || pageIndex < 0) return formatErrorResponse('pageIndex must be an integer >= 0', op);
+        const layer = typeof args.layer === 'string' && args.layer.trim() ? args.layer : null;
+
+        const res = await ScriptExecutor.executeViaUXP(layoutModelCode(pageIndex));
         if (!res?.success) return formatErrorResponse(res?.error || 'Failed to read layout model', op);
 
         let cfg;

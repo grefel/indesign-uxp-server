@@ -15,6 +15,7 @@ import {
     ImageAnalysisHandlers,
     LayerHandlers,
     LayoutModelHandlers,
+    LayoutScoreHandlers,
     MasterSpreadHandlers,
     PageHandlers,
     PageItemHandlers,
@@ -171,6 +172,7 @@ export class InDesignMCPServer {
             case 'get_layout_model': return await LayoutModelHandlers.getLayoutModel(args);
             case 'measure_text_table': return await LayoutModelHandlers.measureTextTable(args);
             case 'measure_text_in_shapes': return await LayoutModelHandlers.measureTextInShapes(args);
+            case 'score_layout': return await LayoutScoreHandlers.scoreLayout(args);
 
             // Layers
             case 'duplicate_items_to_layer': return await LayerHandlers.duplicateItemsToLayer(args);
