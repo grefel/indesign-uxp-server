@@ -16,6 +16,7 @@ import { layerToolDefinitions } from './toolDefinitionsLayer.js';
 import { imageAnalysisToolDefinitions } from './toolDefinitionsImageAnalysis.js';
 import { layoutModelToolDefinitions } from './toolDefinitionsLayoutModel.js';
 import { layoutScoreToolDefinitions } from './toolDefinitionsLayoutScore.js';
+import { layoutSolverToolDefinitions } from './toolDefinitionsLayoutSolver.js';
 
 // Combine all tool definitions into a single array
 export const allToolDefinitions = [
@@ -32,6 +33,7 @@ export const allToolDefinitions = [
     ...imageAnalysisToolDefinitions,
     ...layoutModelToolDefinitions,
     ...layoutScoreToolDefinitions,
+    ...layoutSolverToolDefinitions,
 ];
 
 // Export individual modules for specific use cases
@@ -47,4 +49,5 @@ export { spreadToolDefinitions } from './toolDefinitionsSpread.js';
 export { layerToolDefinitions } from './toolDefinitionsLayer.js';
 export { imageAnalysisToolDefinitions } from './toolDefinitionsImageAnalysis.js';
 export { layoutModelToolDefinitions } from './toolDefinitionsLayoutModel.js';
-export { layoutScoreToolDefinitions } from './toolDefinitionsLayoutScore.js'; 
+export { layoutScoreToolDefinitions } from './toolDefinitionsLayoutScore.js';
+export { layoutSolverToolDefinitions } from './toolDefinitionsLayoutSolver.js'; 

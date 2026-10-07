@@ -16,6 +16,7 @@ export { GraphicsHandlers } from './graphicsHandlers.js';
 export { ImageAnalysisHandlers } from './imageAnalysisHandlers.js';
 export { LayoutModelHandlers } from './layoutModelHandlers.js';
 export { LayoutScoreHandlers } from './layoutScoreHandlers.js';
+export { LayoutSolverHandlers } from './layoutSolverHandlers.js';
 export { StyleHandlers } from './styleHandlers.js';
 
 // Advanced Layout and Organization

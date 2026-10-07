@@ -21,7 +21,7 @@ export class HelpHandlers {
         text: {
             name: 'Text & Typography',
             description: 'Create and edit text frames, apply styles',
-            tools: ['create_text_frame', 'edit_text_frame', 'apply_paragraph_style', 'apply_character_style', 'get_text_metrics', 'measure_text', 'fit_text_frame_height', 'get_layout_model', 'measure_text_table', 'measure_text_in_shapes', 'score_layout']
+            tools: ['create_text_frame', 'edit_text_frame', 'apply_paragraph_style', 'apply_character_style', 'get_text_metrics', 'measure_text', 'fit_text_frame_height', 'get_layout_model', 'measure_text_table', 'measure_text_in_shapes', 'score_layout', 'artwork_solve', 'artwork_apply']
         },
         graphics: {
             name: 'Graphics & Images',
