@@ -93,37 +93,39 @@ export class ExportHandlers {
 
             try {
                 const formatStr = ${JSON.stringify(format)};
-                let exportFormat;
-                if (formatStr === 'JPEG') {
-                    exportFormat = ExportFormat.jpegType;
-                } else if (formatStr === 'PNG') {
-                    exportFormat = ExportFormat.pngType;
+                // UXP kennt nur JPG und PNG_FORMAT als Bildexport; TIFF gibt es in ExportFormat nicht.
+                // Die app-weiten Farbraum-Vorgaben können auf GRAY stehen → RGB erzwingen.
+                const { ExportRangeOrAllPages, PNGColorSpaceEnum, JpegColorSpaceEnum, JPEGOptionsQuality } = require('indesign');
+                let exportFormat, prefs;
+                if (formatStr === 'PNG') {
+                    exportFormat = ExportFormat.PNG_FORMAT;
+                    prefs = app.pngExportPreferences;
+                    prefs.pngExportRange = ExportRangeOrAllPages.EXPORT_RANGE;
+                    prefs.pngColorSpace = PNGColorSpaceEnum.RGB;
                 } else if (formatStr === 'TIFF') {
-                    exportFormat = ExportFormat.tiffType;
+                    return { success: false, error: 'TIFF export is not supported by the InDesign UXP API; use JPEG or PNG' };
                 } else {
-                    exportFormat = ExportFormat.jpegType;
+                    exportFormat = ExportFormat.JPG;
+                    prefs = app.jpegExportPreferences;
+                    prefs.jpegExportRange = ExportRangeOrAllPages.EXPORT_RANGE;
+                    prefs.jpegColorSpace = JpegColorSpaceEnum.RGB;
+                    const q = ${Number(quality) || 80};
+                    prefs.jpegQuality = q >= 90 ? JPEGOptionsQuality.MAXIMUM : q >= 70 ? JPEGOptionsQuality.HIGH : q >= 40 ? JPEGOptionsQuality.MEDIUM : JPEGOptionsQuality.LOW;
                 }
+                prefs.exportResolution = ${Number(resolution) || 300};
+                prefs.exportingSpread = false;
 
                 const ext = ${JSON.stringify(formatLower)};
                 const pageRangeStr = ${JSON.stringify(pageRange)};
+                const indices = pageRangeStr === 'all'
+                    ? Array.from({ length: doc.pages.length }, (_, i) => i)
+                    : pageRangeStr.split(',').map(p => parseInt(p, 10) - 1).filter(i => i >= 0 && i < doc.pages.length);
                 let exportedCount = 0;
-
-                if (pageRangeStr !== 'all') {
-                    const pages = pageRangeStr.split(',');
-                    for (let i = 0; i < pages.length; i++) {
-                        const pageNum = parseInt(pages[i]) - 1;
-                        if (pageNum >= 0 && pageNum < doc.pages.length) {
-                            const fileName = folder + '/page_' + (pageNum + 1) + '.' + ext;
-                            await doc.pages.item(pageNum).exportFile(exportFormat, fileName, false);
-                            exportedCount++;
-                        }
-                    }
-                } else {
-                    for (let i = 0; i < doc.pages.length; i++) {
-                        const fileName = folder + '/page_' + (i + 1) + '.' + ext;
-                        await doc.pages.item(i).exportFile(exportFormat, fileName, false);
-                        exportedCount++;
-                    }
+                // Page hat kein exportFile() → Dokument-Export mit absoluter Seitenangabe "+n"
+                for (const i of indices) {
+                    prefs.pageString = '+' + (i + 1);
+                    await doc.exportFile(exportFormat, folder + '/page_' + (i + 1) + '.' + ext, false);
+                    exportedCount++;
                 }
 
                 return { success: true, count: exportedCount };

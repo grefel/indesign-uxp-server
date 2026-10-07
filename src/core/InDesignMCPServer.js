@@ -12,11 +12,13 @@ import {
     GraphicsHandlers,
     GroupHandlers,
     HelpHandlers,
+    LayerHandlers,
     MasterSpreadHandlers,
     PageHandlers,
     PageItemHandlers,
     StyleHandlers,
     TextHandlers,
+    TextMetricsHandlers,
     UtilityHandlers
 } from '../handlers/index.js';
 import { formatResponse, formatErrorResponse } from '../utils/stringUtils.js';
@@ -142,6 +144,11 @@ export class InDesignMCPServer {
             case 'populate_table': return await TextHandlers.populateTable(args);
             case 'find_replace_text': return await TextHandlers.findReplaceText(args);
 
+            // Text Metrics
+            case 'get_text_metrics': return await TextMetricsHandlers.getTextMetrics(args);
+            case 'measure_text': return await TextMetricsHandlers.measureText(args);
+            case 'fit_text_frame_height': return await TextMetricsHandlers.fitTextFrameHeight(args);
+
             // Graphics Management
             case 'create_rectangle': return await GraphicsHandlers.createRectangle(args);
             case 'create_ellipse': return await GraphicsHandlers.createEllipse(args);
@@ -151,6 +158,11 @@ export class InDesignMCPServer {
             case 'list_object_styles': return await GraphicsHandlers.listObjectStyles();
             case 'apply_object_style': return await GraphicsHandlers.applyObjectStyle(args);
             case 'get_image_info': return await GraphicsHandlers.getImageInfo(args);
+            case 'place_image_in_frame': return await GraphicsHandlers.placeImageInFrame(args);
+
+            // Layers
+            case 'duplicate_items_to_layer': return await LayerHandlers.duplicateItemsToLayer(args);
+            case 'export_layer_preview': return await LayerHandlers.exportLayerPreview(args);
 
             // Style Management
             case 'create_paragraph_style': return await StyleHandlers.createParagraphStyle(args);

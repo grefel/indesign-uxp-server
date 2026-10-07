@@ -335,4 +335,76 @@ export const contentToolDefinitions = [
             required: ['objectIndex', 'colorName'],
         },
     },
-]; 
+    // =================== TEXT METRICS ===================
+    {
+        name: 'get_text_metrics',
+        description: 'Per-line metrics of a text frame: contents, baseline, ascent, descent, top/bottom, x and line width (mm), point size/leading (pt), hyphenation and paragraph-end flags, plus frame insets and overset status (overset character count across the whole story).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                itemId: { type: 'number', description: 'Id of the text frame (from list_page_items / get_page_item_info)' },
+            },
+            required: ['itemId'],
+        },
+    },
+    {
+        name: 'measure_text',
+        description: 'Simulate line breaks of a text frame for an assumed width, point size, leading and/or sample text without changing the document content (a temporary duplicate is measured and removed). Returns lines, line count and the frame height required to fit.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                itemId: { type: 'number', description: 'Id of the text frame whose formatting and position are used' },
+                width: { type: 'number', description: 'Assumed frame width in mm (default: current width)' },
+                pointSize: { type: 'number', description: 'Assumed point size in pt; mixed sizes are scaled proportionally relative to the first character, numeric leading likewise' },
+                leading: { type: 'number', description: 'Assumed leading in pt for all text' },
+                text: { type: 'string', description: 'Sample text replacing the frame contents (formatting of the frame start is used)' },
+            },
+            required: ['itemId'],
+        },
+    },
+    {
+        name: 'fit_text_frame_height',
+        description: 'Shrink (or grow, if overset) a text frame height to its content, keeping top and width. Optionally move the frame vertically so its last baseline or descender lands on a given y position. Auto-sizing of the frame is switched off.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                itemId: { type: 'number', description: 'Id of the text frame' },
+                fitTo: { type: 'string', enum: ['descender', 'baseline'], description: "Bottom edge at the last line's descender (default) or at its baseline (InDesign auto-size behaviour)", default: 'descender' },
+                alignBaselineTo: { type: 'number', description: 'Optional target y position in mm; the frame is moved so that alignTarget lies on it' },
+                alignTarget: { type: 'string', enum: ['lastBaseline', 'descender'], description: 'Which line edge alignBaselineTo refers to', default: 'lastBaseline' },
+            },
+            required: ['itemId'],
+        },
+    },
+
+    // =================== IMAGE FRAMES ===================
+    {
+        name: 'place_image_in_frame',
+        description: 'Set a graphic frame and its image content independently while preserving the image aspect ratio, optionally placing a file first and clipping the frame to its page (or bleed). Returns effective/actual ppi, scale and whether the image fully covers the frame. Bounds are mm, either {x, y, width, height} or geometricBounds [y1, x1, y2, x2].',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                itemId: { type: 'number', description: 'Id of the graphic frame or of the placed graphic inside it' },
+                filePath: { type: 'string', description: 'Optional image file to place into the frame first' },
+                frameBounds: {
+                    description: 'New frame bounds: {x, y, width, height} or [y1, x1, y2, x2] (mm). Omit to keep the frame.',
+                    oneOf: [
+                        { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } }, required: ['x', 'y', 'width', 'height'] },
+                        { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
+                    ],
+                },
+                imageBounds: {
+                    description: 'Image content position/size: {x, y, width?, height?} (mm). With only width or height the other is derived from the aspect ratio; with both, the image fills or fits that box (see imageFit) centered. Omit to leave the image untouched.',
+                    oneOf: [
+                        { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } }, required: ['x', 'y'] },
+                        { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
+                    ],
+                },
+                imageFit: { type: 'string', enum: ['fill', 'fit'], description: 'How the image uses an imageBounds box with width and height', default: 'fill' },
+                clipToPage: { type: 'boolean', description: 'Clip the frame to the page it is centered on (e.g. so it does not reach into the facing page)', default: false },
+                clipIncludeBleed: { type: 'boolean', description: 'When clipping, extend the page edges by the document bleed (spine edges of facing pages excluded)', default: false },
+            },
+            required: ['itemId'],
+        },
+    },
+];

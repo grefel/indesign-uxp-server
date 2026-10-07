@@ -66,6 +66,9 @@ Add to your MCP client configuration:
 - `get_text_info` - Get text frame properties
 - `apply_paragraph_style` - Apply paragraph styles
 - `apply_character_style` - Apply character styles
+- `get_text_metrics` - Per-line baseline, ascent, descent, width and overset status
+- `measure_text` - Simulate line breaks for an assumed width/point size without changing the document
+- `fit_text_frame_height` - Fit frame height to content, optionally align last baseline to a y position
 
 ### Graphics & Images
 
@@ -74,6 +77,7 @@ Add to your MCP client configuration:
 - `create_polygon` - Create polygonal shapes
 - `place_image` - Place images with scaling options
 - `get_image_info` - Get image properties
+- `place_image_in_frame` - Set frame and image bounds separately (aspect ratio kept), returns effective ppi
 
 ### Styles & Colors
 
@@ -90,11 +94,13 @@ Add to your MCP client configuration:
 - `ungroup` - Ungroup objects
 - `create_master_spread` - Create master pages
 - `apply_master_spread` - Apply master to pages
+- `duplicate_items_to_layer` - Duplicate items onto a layer in place, optionally hide source layers
 
 ### Export & Utilities
 
 - `export_pdf` - Export to PDF
 - `export_images` - Export pages as images
+- `export_layer_preview` - Export one page with only one layer visible (RGB JPG/PNG)
 - `execute_indesign_code` - Run custom ExtendScript
 
 ## Best Practices

@@ -21,12 +21,12 @@ export class HelpHandlers {
         text: {
             name: 'Text & Typography',
             description: 'Create and edit text frames, apply styles',
-            tools: ['create_text_frame', 'edit_text_frame', 'apply_paragraph_style', 'apply_character_style']
+            tools: ['create_text_frame', 'edit_text_frame', 'apply_paragraph_style', 'apply_character_style', 'get_text_metrics', 'measure_text', 'fit_text_frame_height']
         },
         graphics: {
             name: 'Graphics & Images',
             description: 'Create shapes and place images with scaling',
-            tools: ['create_rectangle', 'create_ellipse', 'create_polygon', 'place_image', 'get_image_info']
+            tools: ['create_rectangle', 'create_ellipse', 'create_polygon', 'place_image', 'place_image_in_frame', 'get_image_info']
         },
         styles: {
             name: 'Styles & Colors',
@@ -36,12 +36,12 @@ export class HelpHandlers {
         layout: {
             name: 'Layout & Positioning',
             description: 'Group objects, create master spreads, manage positioning',
-            tools: ['create_group', 'ungroup', 'create_master_spread', 'apply_master_spread']
+            tools: ['create_group', 'ungroup', 'create_master_spread', 'apply_master_spread', 'duplicate_items_to_layer']
         },
         export: {
             name: 'Export & Utilities',
             description: 'Export documents and run custom code',
-            tools: ['export_pdf', 'export_images', 'execute_indesign_code']
+            tools: ['export_pdf', 'export_images', 'export_layer_preview', 'execute_indesign_code']
         }
     };
 

@@ -79,7 +79,7 @@ export class LayerHandlers {
             `)}
 
             const hiddenLayers = [];
-            if (${hideSource}) {
+            if (${hideSource === true}) {
                 for (const layer of sourceLayers.values()) {
                     if (layer.id !== target.id && layer.visible) { layer.visible = false; hiddenLayers.push(layer.name); }
                 }
@@ -132,6 +132,7 @@ export class LayerHandlers {
         // Bridge und InDesign laufen auf demselben Rechner → Zielordner hier prüfen, InDesign meldet nur einen generischen Fehler
         const absPath = path.resolve(filePath);
         if (!fs.existsSync(path.dirname(absPath))) return formatErrorResponse(`Directory does not exist: ${path.dirname(absPath)}`, op);
+        const mtimeBefore = fs.existsSync(absPath) ? fs.statSync(absPath).mtimeMs : null;
 
         const prefsObj = format === 'JPG' ? 'app.jpegExportPreferences' : 'app.pngExportPreferences';
         const prefsSetup = format === 'JPG'
@@ -194,7 +195,7 @@ export class LayerHandlers {
             try {
                 for (const [l] of savedVisibility) l.visible = l.id === layer.id;
                 for (const k of Object.keys(wanted)) prefs[k] = wanted[k];
-                await doc.exportFile(ExportFormat.${format === 'JPG' ? 'JPG' : 'PNG_FORMAT'}, ${JSON.stringify(absPath)}, false);
+                await doc.exportFile(ExportFormat.${format === 'JPG' ? 'JPG' : 'PNG_FORMAT'}, ${JSON.stringify(absPath.replace(/\\/g, '/'))}, false);
             } finally {
                 for (const [l, v] of savedVisibility) { try { l.visible = v; } catch (e) {} }
                 for (const k of Object.keys(savedPrefs)) { try { prefs[k] = savedPrefs[k]; } catch (e) {} }
@@ -214,7 +215,9 @@ export class LayerHandlers {
 
         const result = await ScriptExecutor.executeViaUXP(code);
         if (!result?.success) return formatErrorResponse(result?.error || 'Failed to export layer preview', op);
-        if (!fs.existsSync(absPath)) return formatErrorResponse(`InDesign reported success but no file was written at ${absPath}`, op);
+        if (!fs.existsSync(absPath) || fs.statSync(absPath).mtimeMs === mtimeBefore) {
+            return formatErrorResponse(`InDesign reported success but no file was written at ${absPath}`, op);
+        }
         return formatResponse({ ...result, bytes: fs.statSync(absPath).size }, op);
     }
 }

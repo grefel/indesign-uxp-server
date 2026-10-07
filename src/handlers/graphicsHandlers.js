@@ -586,7 +586,6 @@ export class GraphicsHandlers {
         } catch (e) { return formatErrorResponse(e.message, op); }
 
         const code = `
-            const { PageSideOptions } = require('indesign');
             if (app.documents.length === 0) return { success: false, error: 'No document open' };
             const doc = app.activeDocument;
             ${findItemByIdSnippet('item', itemId)}
@@ -603,7 +602,7 @@ export class GraphicsHandlers {
             if (Math.abs(frame.rotationAngle) > 0.001 || Math.abs(frame.shearAngle) > 0.001) {
                 return { success: false, error: 'Rotated or sheared frames are not supported' };
             }
-            ${filePath != null ? `frame.place(${JSON.stringify(filePath)});` : ''}
+            ${filePath != null ? `frame.place(${JSON.stringify(filePath.replace(/\\/g, '/'))});` : ''}
             const graphic = frame.allGraphics.length ? frame.allGraphics[0] : null;
             if (!graphic) return { success: false, error: 'Frame contains no graphic; pass filePath to place one' };
             if (Math.abs(graphic.rotationAngle) > 0.001 || Math.abs(graphic.shearAngle) > 0.001) {
@@ -619,9 +618,9 @@ export class GraphicsHandlers {
 
                 // Seite über den Mittelpunkt bestimmen — der Rahmen kann über den Bund in die Nachbarseite ragen
                 const cx = (fb[1] + fb[3]) / 2, cy = (fb[0] + fb[2]) / 2;
-                const spreadPages = frame.parent.pages;
                 let page = frame.parentPage;
-                for (let i = 0; i < spreadPages.length; i++) {
+                const spreadPages = page ? page.parent.pages : null;
+                for (let i = 0; spreadPages && i < spreadPages.length; i++) {
                     const pb = spreadPages.item(i).bounds;
                     if (cx >= pb[1] && cx <= pb[3] && cy >= pb[0] && cy <= pb[2]) { page = spreadPages.item(i); break; }
                 }
@@ -636,7 +635,7 @@ export class GraphicsHandlers {
                         const inside = dp.documentBleedInsideOrLeftOffset, outside = dp.documentBleedOutsideOrRightOffset;
                         bt = dp.documentBleedTopOffset;
                         bb = dp.documentBleedBottomOffset;
-                        const left = page.side === PageSideOptions.LEFT_HAND;
+                        const left = String(page.side) === 'LEFT_HAND';
                         bl = left ? outside : inside;
                         br = left ? inside : outside;
                     }

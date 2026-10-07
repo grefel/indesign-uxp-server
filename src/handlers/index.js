@@ -11,6 +11,7 @@ export { PageHandlers } from './pageHandlers.js';
 
 // Content Creation and Management
 export { TextHandlers } from './textHandlers.js';
+export { TextMetricsHandlers } from './textMetricsHandlers.js';
 export { GraphicsHandlers } from './graphicsHandlers.js';
 export { StyleHandlers } from './styleHandlers.js';
 
@@ -18,6 +19,7 @@ export { StyleHandlers } from './styleHandlers.js';
 export { MasterSpreadHandlers } from './masterSpreadHandlers.js';
 export { PageItemHandlers } from './pageItemHandlers.js';
 export { GroupHandlers } from './groupHandlers.js';
+export { LayerHandlers } from './layerHandlers.js';
 
 // Multi-Document and Production
 export { BookHandlers } from './bookHandlers.js';

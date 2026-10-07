@@ -135,16 +135,16 @@ Current status: **27/27 passing** across all handler categories.
 `add_page` `delete_page` `duplicate_page` `move_page` `get_page_info` `set_page_properties` `adjust_page_layout` `resize_page` `reframe_page` `navigate_to_page` `select_page` `zoom_to_page` `set_page_background` `create_page_guides` `place_file_on_page` `place_xml_on_page` `get_page_content_summary` `snapshot_page_layout` `delete_page_layout_snapshot` `delete_all_page_layout_snapshots` `list_spreads` `get_spread_info` `duplicate_spread` `move_spread` `delete_spread` `set_spread_properties` `create_spread_guides` `place_file_on_spread` `place_xml_on_spread` `select_spread` `get_spread_content_summary`
 
 ### Text & Tables
-`create_text_frame` `edit_text_frame` `create_table` `populate_table` `find_replace_text` `find_text_in_document`
+`create_text_frame` `edit_text_frame` `create_table` `populate_table` `find_replace_text` `find_text_in_document` `get_text_metrics` `measure_text` `fit_text_frame_height`
 
 ### Styles & Colors
 `create_paragraph_style` `apply_paragraph_style` `create_character_style` `list_styles` `create_color_swatch` `list_color_swatches` `apply_color` `create_object_style` `list_object_styles` `apply_object_style`
 
 ### Graphics & Shapes
-`place_image` `get_image_info` `create_rectangle` `create_ellipse` `create_polygon`
+`place_image` `place_image_in_frame` `get_image_info` `create_rectangle` `create_ellipse` `create_polygon`
 
 ### Layers
-`create_layer` `set_active_layer` `list_layers` `organize_document_layers`
+`create_layer` `set_active_layer` `list_layers` `organize_document_layers` `duplicate_items_to_layer` `export_layer_preview`
 
 ### Page Items
 `get_page_item_info` `select_page_item` `move_page_item` `resize_page_item` `set_page_item_properties` `duplicate_page_item` `delete_page_item` `list_page_items`
