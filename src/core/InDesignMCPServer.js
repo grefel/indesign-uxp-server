@@ -12,6 +12,7 @@ import {
     GraphicsHandlers,
     GroupHandlers,
     HelpHandlers,
+    ImageAnalysisHandlers,
     LayerHandlers,
     MasterSpreadHandlers,
     PageHandlers,
@@ -159,6 +160,10 @@ export class InDesignMCPServer {
             case 'apply_object_style': return await GraphicsHandlers.applyObjectStyle(args);
             case 'get_image_info': return await GraphicsHandlers.getImageInfo(args);
             case 'place_image_in_frame': return await GraphicsHandlers.placeImageInFrame(args);
+
+            // Image Analysis
+            case 'analyze_image_free_space': return await ImageAnalysisHandlers.analyzeImageFreeSpace(args);
+            case 'check_motif_collision': return await ImageAnalysisHandlers.checkMotifCollision(args);
 
             // Layers
             case 'duplicate_items_to_layer': return await LayerHandlers.duplicateItemsToLayer(args);

@@ -26,7 +26,7 @@ export class HelpHandlers {
         graphics: {
             name: 'Graphics & Images',
             description: 'Create shapes and place images with scaling',
-            tools: ['create_rectangle', 'create_ellipse', 'create_polygon', 'place_image', 'place_image_in_frame', 'get_image_info']
+            tools: ['create_rectangle', 'create_ellipse', 'create_polygon', 'place_image', 'place_image_in_frame', 'get_image_info', 'analyze_image_free_space', 'check_motif_collision']
         },
         styles: {
             name: 'Styles & Colors',

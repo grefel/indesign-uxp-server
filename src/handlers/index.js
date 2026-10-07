@@ -13,6 +13,7 @@ export { PageHandlers } from './pageHandlers.js';
 export { TextHandlers } from './textHandlers.js';
 export { TextMetricsHandlers } from './textMetricsHandlers.js';
 export { GraphicsHandlers } from './graphicsHandlers.js';
+export { ImageAnalysisHandlers } from './imageAnalysisHandlers.js';
 export { StyleHandlers } from './styleHandlers.js';
 
 // Advanced Layout and Organization
