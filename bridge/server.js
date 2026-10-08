@@ -5,6 +5,12 @@ const { v4: uuidv4 } = require('uuid');
 const WS_PORT = 3001;
 const HTTP_PORT = 3000;
 const TIMEOUT_MS = 30000;
+// Kurzer DOM-Test vor Ausführungen, solange InDesign als blockiert gilt
+const PROBE_TIMEOUT_MS = 3000;
+const PROBE_CODE = 'return app.documents.length;';
+const BLOCKED_HINT =
+  'InDesign is not responding – most likely a modal dialog is open in InDesign ' +
+  '(e.g. missing fonts/links, save or import options). Please check InDesign, close the dialog and retry.';
 
 // L1: Optional auth token — set BRIDGE_TOKEN env var to require Bearer auth on /execute.
 // Without it the bridge is open to any local process; token is recommended for shared machines.
@@ -29,6 +35,9 @@ if (BRIDGE_TOKEN) {
 }
 
 let pluginSocket = null;
+let pluginInfo = null; // { version, ... } aus der hello-Nachricht des Plugins
+// Zeitpunkt des letzten Timeouts ohne seither eingegangene Antwort des Plugins
+let blockedSince = null;
 const pending = new Map(); // id -> { resolve, reject, timer }
 
 // Serial execution queue — one UXP execution in flight at a time to prevent
@@ -50,15 +59,16 @@ function drainQueue() {
   }
 
   processingQueue = true;
-  const { code, resolve, reject } = requestQueue.shift();
+  const { code, resolve, reject, timeoutMs = TIMEOUT_MS } = requestQueue.shift();
   const id = uuidv4();
 
   const timer = setTimeout(() => {
     pending.delete(id);
     processingQueue = false;
-    reject(new Error('Execution timed out after 30s'));
+    if (!blockedSince) blockedSince = Date.now();
+    reject(new Error(`Execution timed out after ${Math.round(timeoutMs / 1000)}s. ${BLOCKED_HINT}`));
     drainQueue();
-  }, TIMEOUT_MS);
+  }, timeoutMs);
 
   pending.set(id, {
     resolve: (result) => {
@@ -76,7 +86,9 @@ function drainQueue() {
 
   // Guard against WebSocket transitioning to CLOSING between null-check and send (L2)
   try {
-    socket.send(JSON.stringify({ type: 'execute', id, code }));
+    // deadline: Plugin verwirft Aufträge, die erst nach dem Timeout ankommen (z. B. nach
+    // Schließen eines Dialogs), damit sie nicht verspätet doch noch ausgeführt werden.
+    socket.send(JSON.stringify({ type: 'execute', id, code, deadline: Date.now() + timeoutMs }));
     console.log('[Bridge] Sending execute:', id, code.slice(0, 100));
   } catch (err) {
     clearTimeout(timer);
@@ -87,11 +99,27 @@ function drainQueue() {
   }
 }
 
-function enqueueExecution(code) {
+function enqueueExecution(code, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    requestQueue.push({ code, resolve, reject });
+    requestQueue.push({ code, resolve, reject, timeoutMs });
     drainQueue();
   });
+}
+
+// Liefert true, wenn InDesign ein triviales DOM-Skript zügig beantwortet
+async function probeInDesign() {
+  try {
+    await enqueueExecution(PROBE_CODE, PROBE_TIMEOUT_MS);
+    blockedSince = null;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function blockedError() {
+  const secs = Math.round((Date.now() - blockedSince) / 1000);
+  return `InDesign blocked (no response for ${secs}s). ${BLOCKED_HINT}`;
 }
 
 // WebSocket server — UXP plugin connects here
@@ -112,6 +140,14 @@ wss.on('connection', (ws) => {
 
     console.log('[Bridge] From plugin:', JSON.stringify(msg).slice(0, 200));
 
+    if (msg.type === 'hello') {
+      pluginInfo = { version: msg.version || null, dialogGuard: msg.dialogGuard === true };
+      return;
+    }
+
+    // Jede Antwort, auch eine verspätete, zeigt: InDesign reagiert wieder
+    if (msg.type === 'result' || msg.type === 'error' || msg.type === 'stale') blockedSince = null;
+
     const item = pending.get(msg.id);
     if (!item) return;
 
@@ -130,6 +166,8 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('[Bridge] Plugin disconnected');
     pluginSocket = null;
+    pluginInfo = null;
+    blockedSince = null;
     // Reject any in-flight pending entry
     for (const [id, item] of pending.entries()) {
       clearTimeout(item.timer);
@@ -150,8 +188,22 @@ wss.on('connection', (ws) => {
 
 // HTTP API — MCP server calls these endpoints
 
-app.get('/status', (req, res) => {
-  res.json({ connected: pluginSocket !== null, queueDepth: requestQueue.length });
+// /status?probe=1 prüft zusätzlich aktiv mit kurzem Timeout, ob InDesign reagiert
+app.get('/status', async (req, res) => {
+  let responsive = null;
+  if (req.query.probe && pluginSocket && !processingQueue && requestQueue.length === 0) {
+    responsive = await probeInDesign();
+  }
+  res.json({
+    connected: pluginSocket !== null,
+    queueDepth: requestQueue.length,
+    busy: processingQueue,
+    blocked: blockedSince !== null,
+    blockedSince: blockedSince ? new Date(blockedSince).toISOString() : null,
+    responsive,
+    plugin: pluginInfo,
+    hint: blockedSince ? BLOCKED_HINT : undefined,
+  });
 });
 
 app.post('/execute', async (req, res) => {
@@ -167,6 +219,10 @@ app.post('/execute', async (req, res) => {
   }
 
   try {
+    // Nach einem Timeout erst kurz testen, statt erneut 30 s zu warten
+    if (blockedSince && !(await probeInDesign())) {
+      return res.status(503).json({ error: blockedError(), blocked: true });
+    }
     const result = await enqueueExecution(code);
     res.json({ result });
   } catch (err) {

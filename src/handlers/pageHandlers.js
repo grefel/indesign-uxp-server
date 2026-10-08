@@ -280,7 +280,9 @@ export class PageHandlers {
      * Place a file on a page
      */
     static async placeFileOnPage(args) {
-        const { pageIndex, filePath, x = 10, y = 10, layerName, showingOptions = false, autoflowing = false } = args;
+        const { pageIndex, filePath, x = 10, y = 10, layerName, autoflowing = false } = args;
+        // Importoptionen-Dialog wäre modal und blockiert die Bridge.
+        const showingOptions = false;
 
         const code = `
             if (app.documents.length === 0) return { success: false, error: 'No document open' };

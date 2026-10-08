@@ -158,7 +158,7 @@ export const bookToolDefinitions = [
             type: 'object',
             properties: {
                 bookPath: { type: 'string', description: 'Path to the book file' },
-                printDialog: { type: 'boolean', description: 'Show print dialog', default: true },
+                printDialog: { type: 'boolean', description: 'Ignored: always prints without dialog (modal dialogs would block the bridge)', default: false },
                 printerPreset: {
                     type: 'string',
                     enum: ['DEFAULT_VALUE', 'CUSTOM'],

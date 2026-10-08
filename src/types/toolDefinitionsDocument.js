@@ -34,11 +34,12 @@ export const documentToolDefinitions = [
     },
     {
         name: 'open_document',
-        description: 'Open an existing document',
+        description: 'Open an existing document without any InDesign dialogs. Returns diagnostics: links that are missing/out of date, fonts that are not installed (missing/substituted) and whether the document was converted from an older version.',
         inputSchema: {
             type: 'object',
             properties: {
                 filePath: { type: 'string', description: 'Path to the document file' },
+                showWindow: { type: 'boolean', description: 'Open the document in a layout window (false = open invisibly)', default: true },
             },
             required: ['filePath'],
         },
@@ -63,7 +64,7 @@ export const documentToolDefinitions = [
                 saveOptions: {
                     type: 'string',
                     enum: ['ASK', 'SAVE', 'DISCARD'],
-                    description: 'What to do with unsaved changes. ASK (default) opens InDesign save dialog. SAVE saves first. DISCARD throws away changes.',
+                    description: 'What to do with unsaved changes. ASK (default) closes only unmodified documents and returns an error otherwise (no dialog is shown). SAVE saves first. DISCARD throws away changes.',
                     default: 'ASK',
                 },
             },

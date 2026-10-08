@@ -2,6 +2,7 @@ const { app } = require("indesign");
 const { entrypoints } = require("uxp");
 
 const statusEl = document.getElementById("status");
+const PLUGIN_VERSION = "1.1.0"; // synchron zu manifest.json halten
 
 function serializeResult(value) {
   if (value === null || value === undefined) return null;
@@ -27,14 +28,40 @@ function sandboxedRequire(moduleName) {
   return require(moduleName);
 }
 
+// Unterdrückt Dialoge während der Ausführung; vorheriger Wert wird wiederhergestellt
+async function withoutDialogs(run) {
+  const { UserInteractionLevels } = require("indesign");
+  const sp = app.scriptPreferences;
+  let prev = null;
+  try {
+    prev = sp.userInteractionLevel;
+    sp.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
+  } catch (e) {
+    console.error("[Plugin] userInteractionLevel not settable:", e);
+  }
+  try {
+    return await run();
+  } finally {
+    if (prev !== null) {
+      try { sp.userInteractionLevel = prev; } catch (e) {}
+    }
+  }
+}
+
 async function handleExecute(ws, msg) {
+  // Verspätet zugestellt (InDesign war blockiert, Bridge hat schon aufgegeben): verwerfen
+  if (msg.deadline && Date.now() > msg.deadline) {
+    console.warn("[Plugin] Dropping stale execute:", msg.id);
+    ws.send(JSON.stringify({ type: 'stale', id: msg.id }));
+    return;
+  }
   let timerId;
   try {
     // Pass sandboxedRequire so code inside new Function() can call require('indesign') etc.
     // new Function() runs in global scope and loses UXP's module-scoped require.
     const fn = new Function('app', 'require', `return (async () => { ${msg.code} })()`);
     const result = await Promise.race([
-      fn(app, sandboxedRequire).finally(() => clearTimeout(timerId)),
+      withoutDialogs(() => fn(app, sandboxedRequire)).finally(() => clearTimeout(timerId)),
       new Promise((_, reject) => {
         timerId = setTimeout(() => reject(new Error('Execution timed out in plugin (25s)')), 25000);
       }),
@@ -52,6 +79,7 @@ function connectToBridge() {
   ws.onopen = () => {
     statusEl.textContent = "Connected to bridge ✓";
     console.log("[Plugin] Connected to bridge");
+    ws.send(JSON.stringify({ type: 'hello', version: PLUGIN_VERSION, dialogGuard: true }));
   };
 
   ws.onmessage = (event) => {

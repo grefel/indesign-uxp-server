@@ -143,7 +143,7 @@ export const pageToolDefinitions = [
                 x: { type: 'number', description: 'X position in mm', default: 10 },
                 y: { type: 'number', description: 'Y position in mm', default: 10 },
                 layerName: { type: 'string', description: 'Layer name to place on' },
-                showingOptions: { type: 'boolean', description: 'Show import options dialog', default: false },
+                showingOptions: { type: 'boolean', description: 'Ignored: import options dialog is never shown (modal dialogs would block the bridge)', default: false },
                 autoflowing: { type: 'boolean', description: 'Autoflow placed text', default: false },
             },
             required: ['pageIndex', 'filePath'],

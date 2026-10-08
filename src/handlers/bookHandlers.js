@@ -115,11 +115,11 @@ export class BookHandlers {
                 } else if (fmt === 'HTML') {
                     exportFormat = ExportFormat.html;
                 } else {
-                    await book.close();
+                    await book.close(require('indesign').SaveOptions.no);
                     return { success: false, error: 'Unsupported format: ' + fmt };
                 }
                 await book.exportFile(exportFormat, ${JSON.stringify(outputPath)});
-                await book.close();
+                await book.close(require('indesign').SaveOptions.no);
                 return { success: true, message: 'Book exported successfully' };
             } catch(e) {
                 return { success: false, error: 'Error exporting book: ' + e.message };
@@ -165,7 +165,7 @@ export class BookHandlers {
                     ${includeIdml},
                     ${includePdf}
                 );
-                await book.close();
+                await book.close(require('indesign').SaveOptions.no);
                 return { success: true, message: 'Book packaged successfully' };
             } catch(e) {
                 return { success: false, error: 'Error packaging book: ' + e.message };
@@ -204,7 +204,7 @@ export class BookHandlers {
                     documentCount: book.bookContents.length,
                     contents: contents
                 };
-                await book.close();
+                await book.close(require('indesign').SaveOptions.no);
                 return { success: true, info: info };
             } catch(e) {
                 return { success: false, error: 'Error getting book info: ' + e.message };
@@ -373,7 +373,7 @@ export class BookHandlers {
                     ? `book.preflight(${JSON.stringify(outputPath)}, ${autoOpen});`
                     : `book.preflight();`
                 }
-                await book.close();
+                await book.close(require('indesign').SaveOptions.no);
                 return { success: true, message: 'Book preflighted successfully' };
             } catch(e) {
                 return { success: false, error: 'Error preflighting book: ' + e.message };
@@ -390,14 +390,16 @@ export class BookHandlers {
      * Print a book
      */
     static async printBook(args) {
-        const { bookPath, printDialog = true, printerPreset = 'DEFAULT_VALUE' } = args;
+        const { bookPath, printerPreset = 'DEFAULT_VALUE' } = args;
+        // Druckdialog wäre modal und blockiert die Bridge – daher immer ohne Dialog.
+        const printDialog = false;
 
         const code = `
             const { PrinterPresetTypes } = require('indesign');
             try {
                 const book = await app.open(${JSON.stringify(bookPath)});
                 await book.print(${printDialog}, PrinterPresetTypes[${JSON.stringify(printerPreset)}]);
-                await book.close();
+                await book.close(require('indesign').SaveOptions.no);
                 return { success: true, message: 'Book print job sent successfully' };
             } catch(e) {
                 return { success: false, error: 'Error printing book: ' + e.message };

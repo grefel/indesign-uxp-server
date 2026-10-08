@@ -220,15 +220,59 @@ export class DocumentHandlers {
      * Open an existing document
      */
     static async openDocument(args) {
-        const { filePath } = args;
+        const { filePath, showWindow = true } = args;
 
         if (!existsSync(filePath)) {
             return formatErrorResponse(`File not found: ${filePath}`, "Open Document");
         }
 
+        // Dialoge (fehlende Schriften/Links, Profile, Konvertierung) unterdrückt der
+        // zentrale NEVER_INTERACT-Wrapper; die Befunde liefert stattdessen die Diagnose.
         const code = `
-            await app.open(${JSON.stringify(filePath)});
-            return { success: true, message: 'Document opened: ' + ${JSON.stringify(filePath)} };
+            const { OpenOptions } = require('indesign');
+            let doc = await app.open(${JSON.stringify(filePath)}, ${showWindow ? 'true' : 'false'}, OpenOptions.DEFAULT_VALUE);
+            if (Array.isArray(doc)) doc = doc[0];
+            if (!doc || !doc.isValid) return { success: false, error: 'Open returned no document' };
+            const safe = (fn, d = null) => { try { return fn(); } catch (e) { return d; } };
+            const links = { total: 0, issues: [] };
+            const lc = safe(() => doc.links.length, 0);
+            links.total = lc;
+            for (let i = 0; i < lc; i++) {
+                const l = doc.links.item(i);
+                const st = safe(() => String(l.status), 'UNKNOWN');
+                if (st !== 'NORMAL' && st !== 'LINK_EMBEDDED') {
+                    links.issues.push({ name: safe(() => l.name), status: st, path: safe(() => l.filePath) });
+                }
+            }
+            const fonts = { total: 0, issues: [] };
+            const fc = safe(() => doc.fonts.length, 0);
+            fonts.total = fc;
+            for (let i = 0; i < fc; i++) {
+                const f = doc.fonts.item(i);
+                const st = safe(() => String(f.status), 'UNKNOWN');
+                if (st !== 'INSTALLED') {
+                    fonts.issues.push({ name: safe(() => String(f.name).replace('\t', ' ')), status: st });
+                }
+            }
+            const diagnostics = {
+                converted: safe(() => doc.converted),
+                modified: safe(() => doc.modified),
+                links,
+                fonts,
+            };
+            const warnings = [];
+            if (diagnostics.converted) warnings.push('Document was converted from an older InDesign version (saving overwrites the original format).');
+            if (links.issues.length) warnings.push(links.issues.length + ' link(s) not OK: ' + links.issues.map(x => x.name + ' (' + x.status + ')').join(', '));
+            if (fonts.issues.length) warnings.push(fonts.issues.length + ' font(s) not installed: ' + fonts.issues.map(x => x.name + ' (' + x.status + ')').join(', '));
+            return {
+                success: true,
+                message: 'Document opened: ' + doc.name,
+                documentName: doc.name,
+                showWindow: ${showWindow ? 'true' : 'false'},
+                pages: safe(() => doc.pages.length),
+                warnings,
+                diagnostics,
+            };
         `;
 
         const result = await ScriptExecutor.executeViaUXP(code);
@@ -273,10 +317,8 @@ export class DocumentHandlers {
     static async closeDocument(args = {}) {
         const { saveOptions = 'ASK' } = args;
 
-        // H6: previous implementation always used SaveOptions.no, silently discarding
-        // unsaved changes. Now requires explicit intent via saveOptions parameter.
-        // 'ASK' (default) opens InDesign's native save dialog.
-        // 'SAVE' saves before closing. 'DISCARD' explicitly discards changes.
+        // Kein Speichern-Dialog (würde die Bridge blockieren): 'ASK' schließt nur
+        // unveränderte Dokumente, bei Änderungen muss SAVE oder DISCARD gewählt werden.
         const code = `
             if (app.documents.length === 0) {
                 return { success: false, error: 'No document to close' };
@@ -290,9 +332,14 @@ export class DocumentHandlers {
                 return { success: false, error: 'No document to close' };
             }
             const docName = doc.name;
-            const optMap = { ASK: SaveOptions.ask, SAVE: SaveOptions.yes, DISCARD: SaveOptions.no };
-            const opt = optMap[${JSON.stringify(saveOptions)}] || SaveOptions.ask;
-            await doc.close(opt);
+            const mode = ${JSON.stringify(saveOptions)};
+            if (mode === 'SAVE' && !doc.saved) {
+                return { success: false, error: 'Document has never been saved. Use save_document with a filePath first, or DISCARD.' };
+            }
+            if (mode !== 'SAVE' && mode !== 'DISCARD' && doc.modified) {
+                return { success: false, error: 'Document ' + docName + ' has unsaved changes. Use saveOptions SAVE or DISCARD.' };
+            }
+            await doc.close(mode === 'SAVE' ? SaveOptions.yes : SaveOptions.no);
             return { success: true, message: 'Document closed: ' + docName };
         `;
 
