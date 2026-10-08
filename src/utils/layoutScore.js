@@ -3,7 +3,7 @@
  *
  * Eingabe ist eine Szene (s. Typedefs unten), die score_layout aus InDesign
  * liest und ein Solver auch synthetisch bauen kann. Ausgabe: harte Regeln
- * H1–H10 (Verstoß ⇒ ungültig) und gewichteter Score aus S1–S10 (je 0..1,
+ * H1–H12 (Verstoß ⇒ ungültig) und gewichteter Score aus S1–S10 (je 0..1,
  * 1 = gut). Fehlen Daten für ein Kriterium, ist es null und zählt nicht.
  *
  * Längen in mm (Seiten-/Linealkoordinaten), Schriftgrade in pt.
@@ -55,6 +55,7 @@ import { deepMerge } from './layoutModel.js';
  * @property {number[]} [effPpi] effektive Auflösung [x, y]
  * @property {Array<{top:number,left:number,bottom:number,right:number}>} [motifRects]
  *   sichtbare Motivzellen in Seiten-mm (imageMask: motifRects(placeMask(mask, placement)))
+ * @property {number} [motifFullArea] Fläche des ganzen Motivs (alle Maskenzellen, unbeschnitten) in mm² – für H12
  * @property {object|null} [features] placeFeatures()-Ergebnis in Seiten-mm (safeCrop, extremes, edges, groundLine, direction, centroid)
  * @property {number} [ink] mittlere Tinte des Motivs 0..1 (Default scoring.hierarchy.imageInk)
  * @property {boolean} [frameVisible] Rahmenkanten sichtbar (Bild mit Hintergrund); Default scoring.alignment.imageFrameVisible
@@ -67,7 +68,7 @@ import { deepMerge } from './layoutModel.js';
  */
 
 export const PT_MM = 25.4 / 72;
-const RULES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10'];
+const RULES = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12'];
 const CRITERIA = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10'];
 
 export const SCORING_DEFAULTS = {
@@ -92,6 +93,10 @@ export const SCORING_DEFAULTS = {
         H8: { enabled: true, minGap: 1 },
         H9: { enabled: true, tolerance: 0.05 },
         H10: { enabled: true, minFragment: 3 },
+        // Rolle mit kleinster readingOrder (Headline) steht im Z-Muster vor allen anderen Lesetexten
+        H11: { enabled: true },
+        // sichtbarer Motivanteil ≥ config.minMotifVisible
+        H12: { enabled: true },
     },
     weights: { S1: 2, S2: 1, S3: 1, S4: 1, S5: 1, S6: 1, S7: 1, S8: 1, S9: 1, S10: 0.5 },
     alignment: {
@@ -265,7 +270,8 @@ function prepare(scene, sc) {
             mc = [sx / motifArea, sy / motifArea];
         }
         const frameVisible = im.frameVisible ?? sc.alignment.imageFrameVisible;
-        return { ...im, role, kind: 'image', frameRect: frame, visible, motif, motifBox, motifArea, motifCenter: mc, frameVisible };
+        const motifShare = im.motifFullArea > 0 ? motifArea / im.motifFullArea : null;
+        return { ...im, role, kind: 'image', frameRect: frame, visible, motif, motifBox, motifArea, motifShare, motifCenter: mc, frameVisible };
     });
     return { page, typeArea, texts, images, fmt };
 }
@@ -340,6 +346,32 @@ function seenEdges(im, vis, page, gap) {
         top: mb.top - clip.top < gap, left: mb.left - clip.left < gap,
         bottom: clip.bottom - mb.bottom < gap, right: clip.right - mb.right < gap,
     };
+}
+
+/**
+ * Z-Muster: A vor B, wenn beide in einer Zeile liegen (vertikale Überlappung
+ * > rowOverlap der kleineren Höhe) und A links beginnt, sonst wenn A höher beginnt.
+ */
+export function zBefore(A, B, rowOverlap = 0.3) {
+    const ov = Math.min(A.bottom, B.bottom) - Math.max(A.top, B.top);
+    const minH = Math.min(A.bottom - A.top, B.bottom - B.top);
+    if (ov > rowOverlap * minH) return A.left < B.left;
+    return A.top < B.top;
+}
+
+/** Rolle mit der kleinsten readingOrder (Headline) oder null. */
+export function leadRole(roles = {}) {
+    let best = null;
+    for (const [name, def] of Object.entries(roles)) {
+        if (Number.isFinite(def?.readingOrder) && (best === null || def.readingOrder < roles[best].readingOrder)) best = name;
+    }
+    return best;
+}
+
+/** Dürfen zwei Rollen in der Lesefolge tauschen? readingOrderFlexible: true = mit allen, Array = mit diesen Rollen. */
+export function orderFlexible(roles, a, b) {
+    const fa = roles?.[a]?.readingOrderFlexible, fb = roles?.[b]?.readingOrderFlexible;
+    return fa === true || fb === true || (Array.isArray(fa) && fa.includes(b)) || (Array.isArray(fb) && fb.includes(a));
 }
 
 function checkRules(P, scene, sc) {
@@ -475,6 +507,23 @@ function checkRules(P, scene, sc) {
                 const after = (String(t.lines[k + 1]?.text ?? '').match(/^\p{L}+/u) || [''])[0].length;
                 if (before < minF || after < minF) v('H10', t.id, `hyphenation leaves ${before}/${after} characters (min ${minF})`);
             });
+        }
+    }
+
+    if (on('H11')) {
+        const lead = leadRole(cfg.roles);
+        const ro = P.texts.filter(t => t.vis.length && Number.isFinite(cfg.roles?.[t.role]?.readingOrder));
+        for (const a of ro.filter(t => t.role === lead)) for (const b of ro) {
+            if (b.role !== lead && !zBefore(a.block, b.block, sc.readingFlow.rowOverlap)) v('H11', [a.id, b.id], `${b.role} before ${lead} in Z order`);
+        }
+    }
+
+    if (on('H12')) {
+        const min = cfg.minMotifVisible ?? 0;
+        for (const im of P.images) {
+            if (!(min > 0) || im.role !== 'image') continue;
+            if (im.motifShare == null) { skipped.push({ rule: 'H12', ids: [im.id], reason: 'no motif mask (motifFullArea)' }); continue; }
+            if (im.motifShare < min - 1e-3) v('H12', im.id, `${rd(im.motifShare * 100, 0)} % of motif visible < ${rd(min * 100, 0)} %`);
         }
     }
     return { violations, skipped };
@@ -883,24 +932,18 @@ function scoreTypography(P, sc, cfg) {
 
 /**
  * S9 Lesefluss: Z-Muster (Zeilen nach Überlappung, dann links→rechts) gegen
- * readingOrder. Rollen mit readingOrderFlexible erzeugen keine Inversionen.
+ * readingOrder. Paare, die laut readingOrderFlexible tauschen dürfen, zählen nicht.
  */
 function scoreReadingFlow(P, sc, cfg) {
     const ro = P.texts.filter(t => t.vis.length && Number.isFinite(cfg.roles?.[t.role]?.readingOrder));
     if (ro.length < 2) return { v: null, note: 'fewer than 2 texts with readingOrder' };
-    const before = (a, b) => {
-        const A = a.block, B = b.block;
-        const ov = Math.min(A.bottom, B.bottom) - Math.max(A.top, B.top);
-        const minH = Math.min(A.bottom - A.top, B.bottom - B.top);
-        if (ov > sc.readingFlow.rowOverlap * minH) return A.left < B.left;
-        return A.top < B.top;
-    };
+    const before = (a, b) => zBefore(a.block, b.block, sc.readingFlow.rowOverlap);
     let pairs = 0, inv = 0;
     const bad = [];
     for (let i = 0; i < ro.length; i++) for (let j = 0; j < ro.length; j++) {
         if (i === j) continue;
         const a = ro[i], b = ro[j];
-        if (cfg.roles[a.role].readingOrderFlexible || cfg.roles[b.role].readingOrderFlexible) continue;
+        if (orderFlexible(cfg.roles, a.role, b.role)) continue;
         if (!(cfg.roles[a.role].readingOrder < cfg.roles[b.role].readingOrder)) continue;
         pairs++;
         if (!before(a, b)) { inv++; bad.push(`${b.role} before ${a.role}`); }
@@ -932,7 +975,7 @@ function scoreGaze(P, sc) {
 // ------------------------------------------------------------------ Gesamt
 
 /**
- * Nur die harten Regeln H1–H10 (für frühes Verwerfen im Solver).
+ * Nur die harten Regeln H1–H12 (für frühes Verwerfen im Solver).
  * @param {Scene} scene
  * @returns {{valid:boolean, violations:Array<{rule:string, ids:Array, detail:string}>, skipped:Array<{rule:string, ids:Array, reason:string}>}}
  */
@@ -992,12 +1035,14 @@ export function scoreLayout(scene, { detail = false, skipScoreIfInvalid = false 
  * @param {object|null} mask normierte Maske
  * @param {object|null} feat normierte Merkmale
  * @param {{imageBounds:number[], frameBounds:number[], pageBounds?:number[], flip?:string}} geometry
- * @returns {{motifRects: Array|null, features: object|null}}
+ * @returns {{motifRects: Array|null, motifFullArea: number|null, features: object|null}}
  */
 export function placeImageData(mask, feat, geometry) {
     const placement = placementFromGeometry(geometry);
+    const placed = mask ? placeMask(mask, placement) : null;
     return {
-        motifRects: mask ? motifRects(placeMask(mask, placement)) : null,
+        motifRects: placed ? motifRects(placed) : null,
+        motifFullArea: placed ? placed.cells.reduce((s, c) => s + area(c.rect), 0) : null,
         features: feat?.motif ? placeFeatures(feat, placement, { maxEdges: 12 }) : null,
     };
 }

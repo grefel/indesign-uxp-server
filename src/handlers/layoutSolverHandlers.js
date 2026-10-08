@@ -17,7 +17,7 @@ import { TEXT_HELPERS } from '../utils/textSnippets.js';
 import { loadConfig } from '../utils/layoutModel.js';
 import { getMotifMask, loadGray } from '../utils/imageMask.js';
 import { getImageFeatures } from '../utils/imageFeatures.js';
-import { scoringConfig } from '../utils/layoutScore.js';
+import { scoringConfig, leadRole } from '../utils/layoutScore.js';
 import {
     solverConfig, measurePlan, planMeasureJobs, batchJobs, mergeMeasurements, buildProblem, solve,
     polygonJobs, applyPolygonResult, prefilter, evaluate, selectDiverse, toSpec, validateSpec, compareApplied,
@@ -310,7 +310,7 @@ function compactResult(spec, layer, applied) {
             ...spec.params,
             headline: t.headline ? { pt: t.headline.pointSize, leading: t.headline.leading, width: round(t.headline.frame[3] - t.headline.frame[1]), lines: t.headline.predicted.lines.length } : undefined,
             description: t.description ? { width: round(t.description.frame[3] - t.description.frame[1]), hyphenation: t.description.hyphenation, lines: t.description.predicted.lines.length, polygon: !!t.description.shape || undefined } : undefined,
-            image: im ? { frame: im.frame, widthMm: im.widthMm, effPpi: im.effPpi?.[0] } : undefined,
+            image: im ? { frame: im.frame, widthMm: im.widthMm, effPpi: im.effPpi?.[0], motifVisible: im.motifVisible } : undefined,
         },
         ...(applied ? { deviations: applied } : {}),
     };
@@ -406,13 +406,14 @@ export class LayoutSolverHandlers {
                     const rejected = {};
                     const rej = k => { rejected[k] = (rejected[k] || 0) + 1; };
                     if (r?.success) {
-                        const H8 = scoringConfig(config).rules.H8;
+                        const scoring = scoringConfig(config), H8 = scoring.rules.H8;
+                        const lead = scoring.rules.H11?.enabled === false ? null : leadRole(config.roles);
                         for (const o of r.out) {
                             const job = pj.find(j => j.id === o.id);
                             if (o.error) { rej('error'); continue; }
                             if (o.overset || !o.lines.length) { rej('overset'); continue; }
                             const c = applyPolygonResult(job.cand, job.elId, job, o);
-                            const bad = prefilter(c, P, { minGap: H8?.minGap ?? 1 });
+                            const bad = prefilter(c, P, { minGap: H8?.minGap ?? 1, lead, rowOverlap: scoring.readingFlow.rowOverlap });
                             if (Object.keys(bad).length) { rej(`prefilter:${[...new Set(Object.values(bad).flat().map(x => x.split(':')[0]))].join('+')}`); continue; }
                             evaluate(c, P);
                             if (c.valid) { out.valid.push(c); ok++; } else rej(`rules:${[...new Set(c.violations.map(v => v.rule))].join('+')}`);

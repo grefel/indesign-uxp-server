@@ -4,7 +4,7 @@
  *   node tests/test-layout-score.js
  */
 import assert from 'assert/strict';
-import { loadConfig, buildFormat, deepMerge } from '../src/utils/layoutModel.js';
+import { loadConfig, buildFormat, deepMerge, validateConfig } from '../src/utils/layoutModel.js';
 import {
     scoreLayout, scoreScene, checkHardRules, scoringConfig, colorInk, spearman, parseAnchor, placeImageData, rect, PT_MM,
 } from '../src/utils/layoutScore.js';
@@ -43,11 +43,11 @@ function text(id, role, x, top, widths, { size = STYLES[role].size, texts = null
 }
 
 /** Bild mit rechteckigem Motiv (in Zellen zerlegt) und optionalen Merkmalen. */
-function image(id, frame, motif, { imageBounds = frame, effPpi = [300, 300], features = null, ink = 0.6 } = {}) {
+function image(id, frame, motif, { imageBounds = frame, effPpi = [300, 300], features = null, ink = 0.6, fullArea = false } = {}) {
     const [t, l, b, r] = motif;
     const cells = [];
     for (let y = t; y < b - 1e-9; y += 2) for (let x = l; x < r - 1e-9; x += 2) cells.push(rect(y, x, Math.min(b, y + 2), Math.min(r, x + 2)));
-    return { id, role: 'image', frame, imageBounds, effPpi, motifRects: cells, features, ink };
+    return { id, role: 'image', frame, imageBounds, effPpi, motifRects: cells, features, ink, ...(fullArea ? { motifFullArea: (b - t) * (r - l) } : {}) };
 }
 
 function features(motif, { dir = 'none', conf = 0, angle = 0, ground = null, safe = null } = {}) {
@@ -410,6 +410,50 @@ test('S9 Lesefluss: Preis vor Beschreibung ist eine Inversion', () => {
     // Preis in der Lesefolge flexibel: keine Inversion
     inv.config = deepMerge(CONFIG, { roles: { price: { readingOrderFlexible: true } } });
     assert.equal(S(inv, 'S9'), 1);
+});
+
+test('H11: Preis über der Headline ist ungültig, abschaltbar', () => {
+    const s = baseScene({ images: [] });
+    s.elements = [text(1, 'headline', 5, 20, [60, 40]), text(2, 'description', 5, 35, [60, 55]), text(3, 'price', 5, 5, [26])];
+    const r = scoreLayout(s);
+    assert.deepEqual(rules(r), ['H11']);
+    assert.match(r.violations[0].detail, /price before headline/);
+    // auch mit readingOrderFlexible: true bleibt die Headline zuerst
+    s.config = deepMerge(CONFIG, { roles: { price: { readingOrderFlexible: true } } });
+    assert.deepEqual(rules(scoreLayout(s)), ['H11']);
+    s.config = deepMerge(CONFIG, { scoring: { rules: { H11: false } } });
+    assert.equal(scoreLayout(s).valid, true);
+});
+
+test('readingOrderFlexible als Rollenliste: Preis zwischen Headline und Beschreibung gültig ohne S9-Abzug', () => {
+    const s = baseScene({ images: [] });
+    s.elements = [text(1, 'headline', 5, 5, [60, 40]), text(3, 'price', 5, 17, [26]), text(2, 'description', 5, 30, [60, 55])];
+    assert.equal(scoreLayout(s).valid, true, JSON.stringify(scoreLayout(s).violations));
+    assert.ok(S(s, 'S9') < 1);
+    s.config = deepMerge(CONFIG, { roles: { price: { readingOrderFlexible: ['description'] } } });
+    const r = scoreLayout(s);
+    assert.equal(r.valid, true);
+    assert.equal(r.breakdown.S9.v, 1);
+    // gegenüber der Headline gilt die Lesefolge weiter
+    const s2 = { ...s, elements: [text(3, 'price', 5, 5, [26]), text(1, 'headline', 5, 17, [60, 40]), text(2, 'description', 5, 33, [60, 55])] };
+    const r2 = scoreLayout(s2);
+    assert.ok(rules(r2).includes('H11'));
+    assert.ok(scoreLayout(s2, {}).breakdown.S9.v < 1);
+    assert.throws(() => validateConfig(deepMerge(CONFIG, { roles: { price: { readingOrderFlexible: ['nix'] } } })), /unknown role 'nix'/);
+});
+
+test('H12: sichtbarer Motivanteil 60 % ungültig, 80 % gültig', () => {
+    const mk = motif => baseScene({ images: [image(10, [12, -3, 55, 40], motif, { features: features(motif, { safe: [20, 10, 45, 25] }), fullArea: true })] });
+    const r60 = scoreLayout(mk([17, -20, 50, 30]));
+    assert.deepEqual(rules(r60), ['H12']);
+    assert.match(r60.violations[0].detail, /60 % of motif visible < 75 %/);
+    assert.equal(scoreLayout(mk([17, -7.5, 50, 30])).valid, true, JSON.stringify(scoreLayout(mk([17, -7.5, 50, 30])).violations));
+    const low = mk([17, -20, 50, 30]);
+    low.config = deepMerge(CONFIG, { minMotifVisible: 0.5 });
+    assert.equal(scoreLayout(low).valid, true);
+    // ohne Gesamtfläche keine Prüfung
+    const no = baseScene();
+    assert.ok(scoreLayout(no).skipped.some(x => x.rule === 'H12'));
 });
 
 test('allowMotifCut: false meldet angeschnittenes Motiv als H7, true nicht', () => {

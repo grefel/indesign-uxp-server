@@ -24,6 +24,8 @@ export const DEFAULT_CONFIG = {
     edgeTolerance: 0.1,
     // Motiv darf vom Bildrahmen angeschnitten werden (safeCrop/H7 gilt weiter); false: Solver schneidet nicht, score_layout meldet H7
     allowMotifCut: true,
+    // Mindestanteil der Motivfläche (Maske), der im sichtbaren Bildbereich (Rahmen ∩ Seite) liegt (H12)
+    minMotifVisible: 0.75,
     // Standardabstände = Basis (kleinster Seitenrand oder Zahl in mm) × Faktor
     spacing: { base: 'minMargin', factors: { margin: 1, gap: 0.5 } },
     // Ebenen, die get_layout_model ohne layer-Parameter ignoriert
@@ -39,7 +41,8 @@ export const DEFAULT_CONFIG = {
             },
         },
     },
-    // rank: 1 = wichtigstes Element; readingOrder nur für Texte
+    // rank: 1 = wichtigstes Element; readingOrder nur für Texte;
+    // readingOrderFlexible: Rollen, mit denen die Reihenfolge tauschen darf (true = alle)
     roles: {
         headline: { rank: 1, readingOrder: 1, allow: { move: true, resize: true, reflow: true, hyphenation: true, pointSize: 0.15, leading: 0.15 } },
         image: { rank: 2, readingOrder: null, allow: { move: true, resize: true, crop: true, scale: true, rotate: true, minPpi: 200 } },
@@ -116,11 +119,16 @@ export function validateConfig(cfg) {
     num(cfg.minPpi, 'minPpi');
     num(cfg.edgeTolerance, 'edgeTolerance');
     if (typeof cfg.allowMotifCut !== 'boolean') throw new Error('config.allowMotifCut must be true or false');
+    if (!(typeof cfg.minMotifVisible === 'number' && cfg.minMotifVisible >= 0 && cfg.minMotifVisible <= 1)) throw new Error('config.minMotifVisible must be a fraction 0..1 (e.g. 0.75)');
     if (!isObj(cfg.roles)) throw new Error('config.roles must be an object { roleName: { rank, readingOrder, allow } }');
     for (const [name, def] of Object.entries(cfg.roles)) {
         if (!isObj(def)) throw new Error(`config.roles.${name} must be an object`);
         if (def.allow !== undefined && !isObj(def.allow)) throw new Error(`config.roles.${name}.allow must be an object`);
-        if (def.readingOrderFlexible !== undefined && typeof def.readingOrderFlexible !== 'boolean') throw new Error(`config.roles.${name}.readingOrderFlexible must be true or false`);
+        const fl = def.readingOrderFlexible;
+        if (fl !== undefined && typeof fl !== 'boolean' && !(Array.isArray(fl) && fl.every(r => typeof r === 'string'))) {
+            throw new Error(`config.roles.${name}.readingOrderFlexible must be a list of role names (e.g. ["description"]) or true/false`);
+        }
+        if (Array.isArray(fl)) for (const r of fl) if (!cfg.roles[r]) throw new Error(`config.roles.${name}.readingOrderFlexible: unknown role '${r}'`);
         for (const k of ['pointSize', 'leading']) {
             const v = def.allow?.[k];
             if (v !== undefined && v !== false && !(typeof v === 'number' && v >= 0 && v < 1)) {

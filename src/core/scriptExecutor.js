@@ -20,15 +20,22 @@ export class ScriptExecutor {
      */
     static async executeViaUXP(code) {
         let response;
+        // L5: 35s timeout — slightly longer than bridge's 30s execution timeout so we
+        // get the bridge's own error message rather than a generic fetch abort
+        const post = () => fetch(`${BRIDGE_URL}/execute`, {
+            method: 'POST',
+            headers: bridgeHeaders(),
+            body: JSON.stringify({ code }),
+            signal: AbortSignal.timeout(35000),
+        });
         try {
-            // L5: 35s timeout — slightly longer than bridge's 30s execution timeout so we
-            // get the bridge's own error message rather than a generic fetch abort
-            response = await fetch(`${BRIDGE_URL}/execute`, {
-                method: 'POST',
-                headers: bridgeHeaders(),
-                body: JSON.stringify({ code }),
-                signal: AbortSignal.timeout(35000),
-            });
+            try {
+                response = await post();
+            } catch (err) {
+                // Keep-Alive-Socket nach > 5 s Leerlauf vom Bridge-Server geschlossen: einmal neu verbinden
+                if (!['ECONNRESET', 'UND_ERR_SOCKET'].includes(err.cause?.code)) throw err;
+                response = await post();
+            }
         } catch (err) {
             // Fast-fail with a clear message when the bridge process isn't running (L5)
             if (err.name === 'TimeoutError' || err.name === 'TypeError' || err.code === 'ECONNREFUSED') {

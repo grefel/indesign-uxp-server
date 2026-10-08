@@ -5,13 +5,13 @@
  *   node tests/test-layout-solver.js
  */
 import assert from 'assert/strict';
-import { loadConfig } from '../src/utils/layoutModel.js';
+import { loadConfig, deepMerge } from '../src/utils/layoutModel.js';
 import {
     solverConfig, measurePlan, planMeasureJobs, batchJobs, mergeMeasurements, plannedSizes, textVariants, pickVariants, placeLines, imageNorm, imageSetups,
-    buildProblem, solve, selectDiverse, layoutDistance, motifPolygon, polygonJobs, applyPolygonResult,
+    buildProblem, buildScene, solve, selectDiverse, layoutDistance, motifPolygon, polygonJobs, applyPolygonResult,
     toSpec, validateSpec, compareApplied, evaluate, rng,
 } from '../src/utils/layoutSolver.js';
-import { PT_MM } from '../src/utils/layoutScore.js';
+import { PT_MM, zBefore, scoreLayout } from '../src/utils/layoutScore.js';
 
 let failed = 0;
 function test(name, fn) {
@@ -193,6 +193,57 @@ test('Kandidaten: Preis einzeilig, Text im Satzspiegel, nicht im Motiv', () => {
         for (const t of c.texts) for (const l of t.lines) {
             assert.ok(l.top >= 5 - 0.06 && l.bottom <= 55 + 0.06 && l.x >= 5 - 0.06 && l.x + l.width <= 70 + 0.06);
         }
+    }
+});
+
+test('H11: Headline in allen Kandidaten zuerst, Preis-Anker davor gar nicht erzeugt', () => {
+    assert.ok(RESULT.stats.leadOrder > 0, 'Preis-Anker vor der Headline verworfen');
+    for (const c of RESULT.valid) {
+        const h = c.texts.find(t => t.role === 'headline');
+        for (const t of c.texts) if (t !== h) assert.ok(zBefore(h.box, t.box), `${t.role} vor Headline (${c.setup.key})`);
+    }
+});
+
+test('readingOrderFlexible ["description"]: Preis zwischen Headline und Beschreibung ohne S9-Abzug', () => {
+    const cfg = deepMerge(config, { roles: { price: { readingOrderFlexible: ['description'] } } });
+    const P2 = buildProblem(MODEL, MEAS, { mask: fakeMask(), feat: FEAT, ink: 0.6 }, cfg, sc);
+    const r = solve(P2, sc);
+    assert.ok(r.stats.valid > 0);
+    for (const c of r.valid) assert.ok(c.breakdown.S9.v === 1 || c.breakdown.S9.v === null);
+    // Preis im Stapel vor die Beschreibung tauschen: gültig, ohne S9-Abzug; mit fester Lesefolge Abzug
+    const shift = (t, dx, dy) => ({
+        ...t, lines: t.lines.map(l => ({ ...l, x: l.x + dx, top: l.top + dy, bottom: l.bottom + dy, baseline: l.baseline + dy })),
+        box: { top: t.box.top + dy, bottom: t.box.bottom + dy, left: t.box.left + dx, right: t.box.right + dx },
+        frame: [t.frame[0] + dy, t.frame[1] + dx, t.frame[2] + dy, t.frame[3] + dx],
+    });
+    let swapped = 0;
+    for (const c of r.valid.filter(x => x.params.price === 'below').slice(0, 50)) {
+        const d = c.texts.find(t => t.role === 'description'), p = c.texts.find(t => t.role === 'price');
+        const dy = p.box.bottom - d.box.bottom;
+        const texts = c.texts.map(t => (t === d ? shift(d, 0, dy) : t === p ? shift(p, d.box.left - p.box.left, d.box.top - p.box.top) : t));
+        const r2 = scoreLayout(buildScene({ ...c, texts }, P2));
+        if (!r2.valid) continue;
+        swapped++;
+        assert.equal(r2.breakdown.S9.v, 1);
+        assert.ok(scoreLayout(buildScene({ ...c, texts }, P)).breakdown.S9.v < 1);
+    }
+    assert.ok(swapped > 0, 'kein gültiger Tausch gefunden');
+});
+
+test('H12: Bild-Setups mit zu wenig sichtbarem Motiv werden verworfen', () => {
+    const setups = imageSetups(P, sc);
+    assert.ok(setups.every(s => s.image.motifVisible >= config.minMotifVisible - 1e-3));
+    assert.ok(setups.some(s => s.image.motifVisible < 1), 'Anschnitt kommt vor');
+    const strict = imageSetups({ ...P, config: deepMerge(config, { minMotifVisible: 0.95 }) }, sc);
+    const loose = imageSetups({ ...P, config: deepMerge(config, { minMotifVisible: 0.3 }) }, sc);
+    assert.ok(strict.length < setups.length && setups.length < loose.length, `${strict.length} < ${setups.length} < ${loose.length}`);
+    assert.ok(strict.every(s => s.image.motifVisible >= 0.95 - 1e-3));
+    // Vorhersage stimmt mit dem Scorer (Maske, H12) überein
+    const c = RESULT.valid.find(x => x.setup.image.motifVisible < 1);
+    if (c) {
+        const im = buildScene(c, P).images[0];
+        const vis = im.motifRects.reduce((a, r) => a + (r.bottom - r.top) * (r.right - r.left), 0) / im.motifFullArea;
+        assert.ok(Math.abs(vis - c.setup.image.motifVisible) < 0.02, `${vis} vs ${c.setup.image.motifVisible}`);
     }
 });
 

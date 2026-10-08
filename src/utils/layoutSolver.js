@@ -14,7 +14,7 @@
 import { boundsToRect, intersectRect, rectDistance, unionRect, rectToArray } from './imageMask.js';
 import { makeMappers } from './imageFeatures.js';
 import { deepMerge } from './layoutModel.js';
-import { scoreLayout, scoringConfig, colorInk, placeImageData, PT_MM } from './layoutScore.js';
+import { scoreLayout, scoringConfig, colorInk, placeImageData, zBefore, leadRole, PT_MM } from './layoutScore.js';
 
 export const SOLVER_DEFAULTS = {
     measure: {
@@ -340,14 +340,33 @@ export function imageNorm(mask, feat, { flipH = false, flipV = false } = {}) {
         motif = m.nRect([x0, y0, x1, y1]);
     }
     if (!motif) motif = [0, 0, 1, 1];
-    return { motif, safe: safe || motif, ground };
+    // Motivzellen [x0, y0, x1, y1] in Seitenorientierung für den sichtbaren Motivanteil (H12)
+    const cells = mask?.cells?.length
+        ? mask.cells.map(c => [flipH ? 1 - c[4] : c[2], flipV ? 1 - c[5] : c[3], flipH ? 1 - c[2] : c[4], flipV ? 1 - c[3] : c[5]])
+        : [[motif[1], motif[0], motif[3], motif[2]]];
+    const cellsArea = cells.reduce((a, c) => a + (c[2] - c[0]) * (c[3] - c[1]), 0);
+    return { motif, safe: safe || motif, ground, cells, cellsArea };
+}
+
+/** Anteil der Motivfläche im sichtbaren Bereich vis bei Bildbounds ib (Rechtecke in mm). */
+export function motifVisibleShare(norm, ib, vis) {
+    if (!vis || !(norm.cellsArea > 0)) return 0;
+    const w = ib.right - ib.left, h = ib.bottom - ib.top;
+    let a = 0;
+    for (const [x0, y0, x1, y1] of norm.cells) {
+        const dx = Math.min(ib.left + x1 * w, vis.right) - Math.max(ib.left + x0 * w, vis.left);
+        const dy = Math.min(ib.top + y1 * h, vis.bottom) - Math.max(ib.top + y0 * h, vis.top);
+        if (dx > 0 && dy > 0) a += dx * dy;
+    }
+    return a / (norm.cellsArea * w * h);
 }
 
 const snap = (v, step, base = 0) => base + Math.round((v - base) / step) * step;
 
 /**
  * Bild-Setups: Topologie, Bildzone, Textspalte, Platzierung (Bild-/Rahmenbounds),
- * sichtbare Motivrechtecke und Merkmale in Seiten-mm.
+ * sichtbare Motivrechtecke und Merkmale in Seiten-mm. Setups mit sichtbarem
+ * Motivanteil < minMotifVisible (H12) entfallen; Anzahl in out.motifHidden.
  */
 export function imageSetups(P, sc) {
     const { fmt, img } = P;
@@ -360,6 +379,8 @@ export function imageSetups(P, sc) {
     const mbw = mr - ml, mbh = mb - mt;
     const maxImgW = img.px ? img.px[0] / img.minPpi * 25.4 : Infinity;
     const allowCut = P.config?.allowMotifCut !== false;
+    const minVis = scoringConfig(P.config).rules.H12?.enabled === false ? 0 : (P.config?.minMotifVisible ?? 0);
+    let motifHidden = 0;
 
     const push = (topo, split, Z, C, bleedSides, kind, scales, anchors) => {
         const Zw = Z.right - Z.left, Zh = Z.bottom - Z.top;
@@ -388,6 +409,8 @@ export function imageSetups(P, sc) {
                 const [st, sl, sb, sr] = img.norm.safe;
                 const safeR = { left: ib.left + sl * imgW, top: ib.top + st * imgH, right: ib.left + sr * imgW, bottom: ib.top + sb * imgH };
                 if (safeR.left < visible.left - 0.05 || safeR.top < visible.top - 0.05 || safeR.right > visible.right + 0.05 || safeR.bottom > visible.bottom + 0.05) continue;
+                const share = cutSides.length ? motifVisibleShare(img.norm, ib, visible) : 1;
+                if (share < minVis - 1e-3) { motifHidden++; continue; }
                 const ppi = img.px ? img.px[0] / (imgW / 25.4) : null;
                 out.push({
                     key: `${topo}|${split ?? ''}|${bleedSides.join('')}|${kind}${f}|${ha}${va}`,
@@ -398,6 +421,7 @@ export function imageSetups(P, sc) {
                         imageBounds: [ib.top, ib.left, ib.bottom, ib.right].map(v => rd(v, 3)),
                         effPpi: ppi ? [rd(ppi, 0), rd(ppi, 0)] : null,
                         widthMm: rd(imgW, 2),
+                        motifVisible: rd(share, 3),
                     },
                 });
             }
@@ -436,6 +460,7 @@ export function imageSetups(P, sc) {
             }
         }
     }
+    out.motifHidden = motifHidden;
     return out;
 }
 
@@ -450,7 +475,7 @@ export function placeSetupImage(setup, P) {
     const box = unionRect(motif);
     const gl = d.features?.groundLine;
     setup.placed = {
-        motifRects: motif, motifBox: box, features: d.features,
+        motifRects: motif, motifFullArea: d.motifFullArea, motifBox: box, features: d.features,
         ground: gl && Math.abs(gl.angle) <= 2 ? (gl.yLeft + gl.yRight) / 2 : box?.bottom ?? null,
     };
     return setup.placed;
@@ -465,11 +490,17 @@ function blockBox(lines) {
     return unionRect(lines.filter(l => String(l.text).trim() !== '').map(lineRect));
 }
 
-/** Harte Vorprüfung ohne Scorer: Satzspiegel, Textabstände, Motivabstand. Liefert Verstöße je Element-id. */
-export function prefilter(cand, P, { minGap = 1, textGap = 1 } = {}) {
+/** Harte Vorprüfung ohne Scorer: Satzspiegel, Textabstände, Motivabstand, Headline zuerst (H11). Liefert Verstöße je Element-id. */
+export function prefilter(cand, P, { minGap = 1, textGap = 1, lead = null, rowOverlap = 0.3 } = {}) {
     const TA = boundsToRect(P.fmt.typeArea);
     const bad = {};
     const tol = 0.05;
+    if (lead) {
+        const ro = cand.texts.filter(t => t.box && Number.isFinite(P.config.roles?.[t.role]?.readingOrder));
+        for (const a of ro.filter(t => t.role === lead)) for (const b of ro) {
+            if (b.role !== lead && !zBefore(a.box, b.box, rowOverlap)) (bad[b.id] ||= []).push(`order:${a.id}`);
+        }
+    }
     for (const t of cand.texts) {
         const b = t.box;
         if (!b || b.top < TA.top - tol || b.left < TA.left - tol || b.bottom > TA.bottom + tol || b.right > TA.right + tol) (bad[t.id] ||= []).push('typeArea');
@@ -527,6 +558,10 @@ export function candidatesForSetup(setup, P, sc, out, stats) {
     const ptv = price ? price.tvs[0] : null;
     const pw = ptv ? ptv.maxW + 0.2 : 0;
     const capOf = (T, tv) => (T.metrics?.cap ? T.metrics.cap * tv.pt / T.ref : tv.pt * PT_MM * 0.7);
+    // Preis-Anker vor der Headline (Z-Muster) gar nicht erst erzeugen (H11)
+    const scoring = scoringConfig(P.config);
+    const lead = scoring.rules.H11?.enabled === false ? null : leadRole(P.config.roles);
+    const leadIdx = price && lead && price.role !== lead ? stackEls.findIndex(T => T.role === lead) : -1;
 
     for (const W of colWidths) {
         for (const side of setup.topo === 'overlay' ? ['left', 'right'] : ['left']) {
@@ -595,7 +630,9 @@ export function candidatesForSetup(setup, P, sc, out, stats) {
                                 py = pl.ground - ptv.lb;
                             } else if (pm === 'besideDesc') { px = cr - pw; py = last.lines.filter(l => String(l.text).trim()).slice(-1)[0].baseline - ptv.lb; }
                             if (pBox <= 0) continue;
-                            texts.push(placeText(price, ptv, rd(px, 3), rd(py, 3), rd(pw, 3)));
+                            const pt = placeText(price, ptv, rd(px, 3), rd(py, 3), rd(pw, 3));
+                            if (leadIdx >= 0 && !zBefore(texts[leadIdx].box, pt.box, scoring.readingFlow.rowOverlap)) { stats.leadOrder++; continue; }
+                            texts.push(pt);
                         }
                         for (const T of fixedEls) texts.push(T.fixed);
                         const cand = { setup, placed: pl, texts, params: { colW: rd(W, 2), side, anchor, price: pm, narrow: !!narrow } };
@@ -629,7 +666,7 @@ export function buildScene(cand, P) {
         const pl = cand.placed;
         images.push({
             id: P.img.id, role: 'image', frame: cand.setup.image.frame, imageBounds: cand.setup.image.imageBounds,
-            effPpi: cand.setup.image.effPpi, motifRects: pl.motifRects, features: pl.features,
+            effPpi: cand.setup.image.effPpi, motifRects: pl.motifRects, motifFullArea: pl.motifFullArea, features: pl.features,
             ...(typeof P.img.ink === 'number' ? { ink: P.img.ink } : {}),
         });
     }
@@ -849,17 +886,20 @@ export function buildProblem(model, meas, imageData, config, sc) {
  */
 export function solve(P, sc) {
     const t0 = Date.now();
-    const stats = { setups: 0, generated: 0, prefiltered: 0, scored: 0, valid: 0, noVariant: 0 };
+    const stats = { setups: 0, motifHidden: 0, generated: 0, leadOrder: 0, prefiltered: 0, scored: 0, valid: 0, noVariant: 0 };
     const setups = imageSetups(P, sc);
     stats.setups = setups.length;
-    const H8 = scoringConfig(P.config).rules.H8;
+    stats.motifHidden = setups.motifHidden || 0;
+    const scoring = scoringConfig(P.config);
+    const H8 = scoring.rules.H8;
     const minGap = H8?.enabled === false ? 0 : (H8?.minGap ?? 1);
+    const lead = scoring.rules.H11?.enabled === false ? null : leadRole(P.config.roles);
     const pass = [], near = [];
     for (const s of setups) {
         const raw = [];
         candidatesForSetup(s, P, sc, raw, stats);
         for (const c of raw) {
-            const bad = prefilter(c, P, { minGap });
+            const bad = prefilter(c, P, { minGap, lead, rowOverlap: scoring.readingFlow.rowOverlap });
             const ids = Object.keys(bad);
             if (!ids.length) { pass.push(c); continue; }
             // Fast-Kandidat: nur ein umbrechbarer Text kollidiert mit dem Motiv
