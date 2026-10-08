@@ -42,12 +42,18 @@ export const SOLVER_DEFAULTS = {
     blockGap: 'gap',
     // vorausgewählte Textvarianten je Spaltenbreite
     variantsPerText: { headline: 3, default: 2 },
-    stackAnchors: ['top', 'motifTop', 'center', 'bottom'],
+    // motifTop: Versalhöhe der ersten Zeile = Motiv-Oberkante; motifBottom: letzte Grundlinie = Standlinie
+    stackAnchors: ['top', 'motifTop', 'motifBottom', 'center', 'bottom'],
     priceAnchors: ['below', 'belowRight', 'cornerBR', 'cornerBL', 'groundR', 'groundL', 'motifSide', 'besideDesc'],
     // Höchstzahl bewerteter Kandidaten (Rest geschichtet per seed gezogen)
     budget: 4000,
     polygon: { enabled: true, maxShapes: 24, gap: 1.5, minWidth: 12, slice: 0.5 },
-    diversity: { minDistance: 0.5 },
+    // Auswahl: bester Kandidat, dann maximal verschiedene Merkmale unter Score ≥ minScore × bester; erreicht dort
+    // keiner minDistance (Merkmals-Distanz 0..1), der beste ≥ fallbackScore × bester, der sie erreicht
+    diversity: {
+        minScore: 0.9, fallbackScore: 0.8, minDistance: 0.5,
+        weights: { arrangement: 0.3, topology: 0.05, imageCell: 0.15, imageSize: 0.15, bleed: 0.1, textColumns: 0.1, order: 0.05, priceRel: 0.05, priceCol: 0.05, polygon: 0.05 },
+    },
     seed: 1,
 };
 
@@ -69,6 +75,7 @@ export function solverConfig(config = {}, overrides = {}) {
     const known = ['imageLeft', 'imageRight', 'imageTop', 'imageBottom', 'overlay'];
     for (const t of s.topologies) if (!known.includes(t)) throw new Error(`config.solver.topologies: unknown '${t}' (allowed ${known.join(', ')})`);
     for (const f of s.splits) if (!(f > 0.15 && f < 0.85)) throw new Error('config.solver.splits must be fractions between 0.15 and 0.85');
+    if (!(s.diversity.minScore > 0 && s.diversity.minScore <= 1)) throw new Error('config.solver.diversity.minScore must be a fraction 0..1 of the best score');
     return s;
 }
 
@@ -443,7 +450,8 @@ export function imageSetups(P, sc) {
                 const C = left ? { ...TA, left: xs + gTI } : { ...TA, right: xs - gTI };
                 if (C.right - C.left < sc.measure.minWidth) continue;
                 const outer = left ? 'left' : 'right', inner = left ? 'right' : 'left';
-                push(topo, f, Z, C, [], 'contain', contain, [[outer, 'center'], [outer, 'bottom'], ['center', 'center']]);
+                // inner: Motivkante an der Zonengrenze → gleichmäßiger Abstand zur Textspalte
+                push(topo, f, Z, C, [], 'contain', contain, [[outer, 'center'], [outer, 'bottom'], [inner, 'bottom'], ['center', 'center']]);
                 if (sc.bleed) {
                     push(topo, f, { ...Z, [outer]: PB[outer] }, C, [outer], 'bleed', bleedS, [[inner, 'center'], [inner, 'bottom']]);
                     push(topo, f, { ...Z, [outer]: PB[outer], bottom: PB.bottom }, C, [outer, 'bottom'], 'bleed', bleedS, [[inner, 'top']]);
@@ -606,6 +614,12 @@ export function candidatesForSetup(setup, P, sc, out, stats) {
                             // Versalhöhe der ersten Zeile = Motiv-Oberkante
                             top = pl.motifBox.top - (first.fb - capOf(T0, first)) + first.top;
                             if (Math.abs(top - C.top) < 0.3) continue;
+                        } else if (anchor === 'motifBottom') {
+                            if (pl?.ground == null) continue;
+                            // letzte Grundlinie des Stapels (bzw. des Preises darunter) = Standlinie/Motiv-Unterkante
+                            const li = combo.length - 1;
+                            top = pl.ground - (inStack ? h + g - ptv.top + ptv.lb : rel[li] + combo[li].tv.lb);
+                            if (Math.abs(top - (C.bottom - H)) < 0.3) continue;
                         }
                         stats.generated++;
                         const texts = combo.map(({ tv }, i) => placeText(stackEls[i], tv, cl, rd(top + rel[i], 3), tv.W));
@@ -659,7 +673,7 @@ export function buildScene(cand, P) {
                 if (T.metrics?.[m]) style[k] = T.metrics[m] * tv.pt / T.ref;
             }
         }
-        return { id: t.id, role: t.role, frame: t.frame, overset: t.overset || 0, lines: t.lines, style, original: T.original };
+        return { id: t.id, role: t.role, frame: t.frame, overset: t.overset || 0, lines: t.lines, style, original: T.original, align: tv?.align ?? T.align };
     });
     const images = [];
     if (cand.setup.image && P.img) {
@@ -684,35 +698,117 @@ export function evaluate(cand, P) {
     return cand;
 }
 
-/** Ähnlichkeit zweier Kandidaten: mittlere IoU der Elementboxen (Text: Zeilenbox, Bild: sichtbares Motiv). */
-export function layoutDistance(a, b) {
-    const boxes = c => {
-        const m = new Map(c.texts.map(t => [t.id, t.box]));
-        if (c.placed?.motifBox) m.set('image', c.placed.motifBox);
-        return m;
-    };
-    const A = boxes(a), B = boxes(b);
-    const ious = [];
-    for (const [k, ra] of A) {
-        const rb = B.get(k);
-        if (!ra || !rb) { ious.push(0); continue; }
-        const x = intersectRect(ra, rb);
-        const ia = area(x);
-        ious.push(ia / (area(ra) + area(rb) - ia || 1));
+/** Drittel (0, 1, 2) eines Werts innerhalb [a, b]. */
+const third = (v, a, b) => (v < a + (b - a) / 3 ? 0 : v > a + 2 * (b - a) / 3 ? 2 : 1);
+
+/**
+ * Anordnungs-Merkmale eines Kandidaten für die Vielfalt: Richtung Textblock →
+ * Motiv in Grad (relativ zur Seite, unabhängig von der Topologie), Topologie,
+ * Motiv-Drittel und Größenklasse, randabfallend, Textspalten, Stapelreihenfolge,
+ * Preis relativ zur Beschreibung und Preis-Drittel, Polygon-Textfläche.
+ * @param {object} c Kandidat
+ * @param {{top,left,bottom,right}} page Seitenrechteck
+ */
+export function layoutFeatures(c, page) {
+    if (c._feat) return c._feat;
+    const W = page.right - page.left, H = page.bottom - page.top;
+    const mb = c.placed?.motifBox || null;
+    const texts = (c.texts || []).filter(t => t.box && !t.fixed);
+    const u = unionRect(texts.map(t => t.box));
+    let arrangement = null;
+    if (mb && u) {
+        const dx = ((mb.left + mb.right) - (u.left + u.right)) / 2 / W, dy = ((mb.top + mb.bottom) - (u.top + u.bottom)) / 2 / H;
+        arrangement = Math.round(Math.atan2(dy, dx) * 180 / Math.PI);
     }
-    return 1 - mean(ious);
+    const f = {
+        arrangement,
+        topology: c.setup?.topo ?? 'none',
+        bleed: (c.setup?.bleed?.length ?? 0) > 0,
+        polygon: !!c.params?.polygon,
+        imageCell: mb ? [third((mb.left + mb.right) / 2, page.left, page.right), third((mb.top + mb.bottom) / 2, page.top, page.bottom)] : null,
+        // Motivfläche / Seitenfläche: klein < 10 %, mittel < 22 %, groß
+        imageSize: mb ? ((s => (s < 0.1 ? 0 : s < 0.22 ? 1 : 2))(area(mb) / (W * H))) : null,
+    };
+    // Textspalten: Gruppen von Textblöcken mit überlappender Breite
+    const cols = [];
+    for (const t of [...texts].sort((a, b) => a.box.left - b.box.left)) {
+        const col = cols.find(k => t.box.left < k.right - 0.5 && t.box.right > k.left + 0.5);
+        if (col) { col.left = Math.min(col.left, t.box.left); col.right = Math.max(col.right, t.box.right); } else cols.push({ left: t.box.left, right: t.box.right });
+    }
+    f.textColumns = Math.min(cols.length, 2);
+    f.order = [...texts].sort((a, b) => (zBefore(a.box, b.box) ? -1 : 1)).map(t => t.role).join('>');
+    const pr = texts.find(t => t.role === 'price') || null;
+    const de = texts.find(t => t.role === 'description') || null;
+    if (pr && de) {
+        const xo = Math.min(pr.box.right, de.box.right) - Math.max(pr.box.left, de.box.left) > 0;
+        f.priceRel = pr.box.top >= de.box.bottom - 0.5 && xo ? 'below' : pr.box.bottom <= de.box.top + 0.5 && xo ? 'above' : pr.box.left >= de.box.right - 0.5 ? 'right' : pr.box.right <= de.box.left + 0.5 ? 'left' : 'other';
+    } else f.priceRel = null;
+    f.priceCol = pr ? third((pr.box.left + pr.box.right) / 2, page.left, page.right) : null;
+    c._feat = f;
+    return f;
 }
 
-/** Top-N divers: zuerst je Topologie, dann Mindestabstand, zuletzt nach Score. */
-export function selectDiverse(cands, n, minDistance = 0.35) {
+/**
+ * Merkmals-Distanz zweier Kandidaten 0..1 (gewichteter Anteil verschiedener
+ * Merkmale; Richtung anteilig bis 90°, Motiv-Drittel halb, wenn nur Spalte oder Zeile abweicht).
+ * @param {{page?:object, weights?:object}} [o]
+ */
+export function layoutDistance(a, b, { page = null, weights = SOLVER_DEFAULTS.diversity.weights } = {}) {
+    const pg = page || pageOf([a, b]);
+    const A = layoutFeatures(a, pg), B = layoutFeatures(b, pg);
+    let acc = 0, ws = 0;
+    for (const [k, w] of Object.entries(weights)) {
+        if (!(w > 0)) continue;
+        let d;
+        if (k === 'arrangement' && A[k] != null && B[k] != null) d = Math.min(1, Math.abs(((A[k] - B[k] + 540) % 360) - 180) / 90);
+        else if (k === 'imageCell' && A.imageCell && B.imageCell) d = ((A.imageCell[0] !== B.imageCell[0]) + (A.imageCell[1] !== B.imageCell[1])) / 2;
+        else d = A[k] === B[k] ? 0 : 1;
+        acc += w * d; ws += w;
+    }
+    return ws ? acc / ws : 0;
+}
+
+/** Seitenrechteck aus den Elementen der Kandidaten (Fallback ohne Format). */
+function pageOf(cands) {
+    return unionRect(cands.flatMap(c => [...(c.texts || []).map(t => t.box), c.placed?.motifBox].filter(Boolean))) || { top: 0, left: 0, bottom: 1, right: 1 };
+}
+
+/**
+ * Top-N divers: bester Kandidat, dann gierig der mit der größten kleinsten
+ * Merkmals-Distanz zu den gewählten unter allen mit Score ≥ minScore × bester
+ * (Gleichstand: höherer Score). Erreicht dort keiner minDistance, gewinnt der
+ * beste Kandidat ≥ fallbackScore × bester, der sie erreicht; sonst der
+ * verschiedenste aus der Spitze, zuletzt nach Score.
+ * @param {object[]} cands gültige, bewertete Kandidaten
+ * @param {number} n
+ * @param {{minScore?:number, fallbackScore?:number, minDistance?:number, weights?:object, page?:object}} [o] page = Seitenrechteck
+ */
+export function selectDiverse(cands, n, o = {}) {
+    const D = SOLVER_DEFAULTS.diversity;
+    const { minScore = D.minScore, fallbackScore = D.fallbackScore, minDistance = D.minDistance, weights = D.weights, page = null } = isObj(o) ? o : {};
     const sorted = [...cands].sort((a, b) => b.score - a.score);
-    const sel = [];
-    const ok = (c, d, distinctTopo) => sel.every(s => layoutDistance(c, s) >= d && (!distinctTopo || s.setup.topo !== c.setup.topo));
-    for (const [d, topo] of [[minDistance, true], [minDistance, false], [minDistance / 2, false], [0.02, false]]) {
-        for (const c of sorted) {
-            if (sel.length >= n) break;
-            if (!sel.includes(c) && ok(c, d, topo)) sel.push(c);
+    if (!sorted.length) return [];
+    const pg = page || pageOf(sorted);
+    const best = sorted[0].score;
+    const top = sorted.filter(c => c.score >= best * minScore - 1e-9);
+    const wide = sorted.filter(c => c.score >= best * Math.min(minScore, fallbackScore) - 1e-9);
+    const sel = [sorted[0]];
+    const dist = c => Math.min(...sel.map(s => layoutDistance(c, s, { page: pg, weights })));
+    const farthest = list => {
+        let bestC = null, bestD = 1e-9;
+        for (const c of list) {
+            if (sel.includes(c)) continue;
+            const d = dist(c);
+            if (d > bestD + 1e-9) { bestD = d; bestC = c; }
         }
+        return bestC && { c: bestC, d: bestD };
+    };
+    while (sel.length < Math.min(n, sorted.length)) {
+        const f = farthest(top);
+        let c = f && f.d >= minDistance - 1e-9 ? f.c : null;
+        if (!c) c = wide.find(x => !sel.includes(x) && dist(x) >= minDistance - 1e-9) || null;
+        if (!c) c = f?.c || farthest(sorted)?.c || sorted.find(x => !sel.includes(x));
+        sel.push(c);
     }
     return sel;
 }

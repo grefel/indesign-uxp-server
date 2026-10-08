@@ -13,7 +13,7 @@ import { TEXT_HELPERS } from '../utils/textSnippets.js';
 import { loadConfig, matchRole, buildFormat } from '../utils/layoutModel.js';
 import { getMotifMask, loadGray } from '../utils/imageMask.js';
 import { getImageFeatures } from '../utils/imageFeatures.js';
-import { scoreLayout, scoringConfig, colorInk, placeImageData } from '../utils/layoutScore.js';
+import { scoreLayout, scoringConfig, colorInk, placeImageData, originalPairing, SOURCE_LABEL } from '../utils/layoutScore.js';
 import { ROLE_PROPS_SNIPPET } from './layoutModelHandlers.js';
 
 const MAX_LAYERS = 12;
@@ -74,6 +74,7 @@ export const READ_CODE = (pageIndex) => `
                 const { p, g } = __roleProps(it);
                 if (p.kind === 'group') { for (const ch of it.pageItems.everyItem().getElements()) walk(ch); return; }
                 const rec = { id: it.id, props: p, gb: it.geometricBounds.map(__r) };
+                try { const s = it.extractLabel('${SOURCE_LABEL}'); if (s) rec.src = Number(s); } catch (e) {}
                 if (p.kind === 'text') {
                     rec.lines = __readLines(it).map(l => [l.contents, __r(l.top), __r(l.bottom), l.baseline, l.x, l.width, l.hyphenated ? 1 : 0, l.paragraphEnd ? 1 : 0]);
                     rec.overset = __oversetInfo(it).oversetCharacters;
@@ -88,6 +89,7 @@ export const READ_CODE = (pageIndex) => `
                             fontStyle: t.fontStyle,
                             color: __color(t.fillColor),
                             tint: t.fillTint,
+                            align: String(t.justification),
                         };
                     }
                 }
@@ -138,8 +140,8 @@ export async function buildScenes(res, cfg, layers, { warnings = [] } = {}) {
     if (sc.sourceLayer && !res.layers.some(([n]) => n === sc.sourceLayer)) warnings.push(`scoring.sourceLayer '${sc.sourceLayer}' not found; H4 skipped`);
 
     const items = res.items.map(it => ({ ...it, role: matchRole(it.props, config.match).role }));
-    const originals = {};
-    for (const it of items) if (it.props.layer === source && it.props.kind === 'text' && it.style && !originals[it.role]) originals[it.role] = styleOf(it.style);
+    const pair = originalPairing(items, source);
+    const originalOf = it => { const o = pair(it); return o ? styleOf(o.style) : null; };
 
     const assets = new Map();
     const scenes = {};
@@ -149,7 +151,7 @@ export async function buildScenes(res, cfg, layers, { warnings = [] } = {}) {
             if (it.props.kind === 'text') {
                 elements.push({
                     id: it.id, role: it.role, frame: it.gb, overset: it.overset || 0,
-                    lines: (it.lines || []).map(toLine), style: styleOf(it.style), original: originals[it.role] || null,
+                    lines: (it.lines || []).map(toLine), style: styleOf(it.style), original: originalOf(it), align: it.style?.align,
                 });
             }
             if (it.img) {

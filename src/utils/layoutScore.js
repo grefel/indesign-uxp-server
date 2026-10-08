@@ -45,7 +45,8 @@ import { deepMerge } from './layoutModel.js';
  * @property {number} [overset] Übersatz-Zeichen (Default 0)
  * @property {SceneLine[]} lines alle Zeilen (auch leere)
  * @property {SceneStyle} style
- * @property {SceneStyle|null} [original] Stil der gleichen Rolle auf der Quell-Ebene (für H4)
+ * @property {SceneStyle|null} [original] Stil des Quell-Objekts auf der Quell-Ebene (für H4)
+ * @property {string} [align] Absatzausrichtung (InDesign Justification, z. B. LEFT_ALIGN) für die bündige Kante in S1
  *
  * @typedef {object} SceneImage Platzierte Grafik
  * @property {string|number} id
@@ -104,6 +105,10 @@ export const SCORING_DEFAULTS = {
         // Linien knapp daneben (tolerance < d ≤ nearMiss) wirken unruhig
         nearMiss: 1.5,
         nearMissPenalty: 0.5,
+        // waagerechte Kanten zählen nur bei Nachbarn in derselben Höhe oder näher als reach mm am Satzspiegelrand
+        reach: 5,
+        // Anteile: senkrechte Kanten auf Linie, waagerechte Kanten auf Linie, wenige vertikale Fluchtlinien
+        parts: { x: 0.45, y: 0.25, lines: 0.3 },
         imageFrameVisible: false,
         wishWeight: 0.3,
         wishFalloff: 2,
@@ -407,7 +412,7 @@ function checkRules(P, scene, sc) {
         const tol = R.H4.tolerance ?? 0.01;
         for (const t of P.texts) {
             const o = t.original;
-            if (!o) { skipped.push({ rule: 'H4', ids: [t.id], reason: `no original for role ${t.role} on source layer` }); continue; }
+            if (!o) { skipped.push({ rule: 'H4', ids: [t.id], reason: `no original (source object) for ${t.role} on source layer` }); continue; }
             const allow = cfg.roles?.[t.role]?.allow || {};
             for (const [k, f] of [['size', allow.pointSize], ['leading', allow.leading]]) {
                 const cur = t.style[k], ref = o[k];
@@ -584,65 +589,156 @@ function anchorValues(P, ref) {
     return vals;
 }
 
+/** Bündige Seiten eines Textblocks aus der Absatzausrichtung (InDesign-Enum als Text); ohne Angabe aus den Zeilenkanten geschätzt. */
+function flushSides(t, tol) {
+    const a = String(t.align || '').toUpperCase();
+    if (a) {
+        if (/CENTER/.test(a) && !/JUSTIFIED/.test(a)) return [];
+        if (/FULLY|JUSTIFIED/.test(a)) return ['left', 'right'];
+        if (/RIGHT/.test(a) || /AWAY_FROM_BINDING/.test(a)) return ['right'];
+        return ['left'];
+    }
+    const out = [];
+    if (std(t.vis.map(l => l.rect.left)) <= tol) out.push('left');
+    if (t.vis.length > 1 && std(t.vis.map(l => l.rect.right)) <= tol) out.push('right');
+    return out.length ? out : ['left'];
+}
+
 /**
- * S1 Ausrichtung: Kandidaten-Linien je Achse. Layout-Linien (Textkanten,
- * Grundlinien, Versalhöhe; sichtbare Bildkanten) gelten als verankert, wenn
- * eine Linie eines anderen Elements, ein Motivmerkmal oder eine
- * Satzspiegelkante innerhalb der Toleranz liegt. Strafe für Beinahe-Treffer.
+ * Kanten je Element für S1. Text: bündige Kante(n), oben Versalhöhe/erste
+ * Grundlinie, unten letzte Grundlinie; Zeilenbox-Ober-/Unterkante (frame)
+ * nur gegen den Satzspiegel. Bild: sichtbare Rahmenkanten, sonst Motiv-
+ * Außenkanten (weiche nur als Ziel) und Standlinie; Kanten an der Seitenkante
+ * (randabfallend) entfallen. Innere Motivkanten sind nur Ziele.
+ * @returns {Array<{id, kind, x:{start?,end?}, y:{start?,end?}, range:[top,bottom], targets:Array<{axis,v,label}>}>}
  */
-function scoreAlignment(P, sc, detail) {
-    const al = sc.alignment, tol = al.tolerance;
-    const cands = []; // { axis, v, owner, kind, w, layout }
-    const add = (axis, v, owner, kind, w, layout) => { if (Number.isFinite(v)) cands.push({ axis, v, owner, kind, w, layout }); };
+function alignmentEdges(P, tol) {
+    const els = [];
+    const edge = (vals, label, frame = []) => ({ vals: vals.filter(Number.isFinite), frame: frame.filter(Number.isFinite), label });
     for (const t of P.texts) {
         if (!t.vis.length) continue;
-        const lefts = t.vis.map(l => l.rect.left), rights = t.vis.map(l => l.rect.right);
-        add('x', t.block.left, t.id, 'left', std(lefts) <= tol ? 1 : 0.4, true);
-        add('x', t.block.right, t.id, 'right', std(rights) <= tol ? 1 : 0.4, true);
-        const fb = t.vis[0].baseline, lb = t.vis[t.vis.length - 1].baseline;
-        add('y', fb, t.id, 'firstBaseline', 1, true);
-        if (t.vis.length > 1) add('y', lb, t.id, 'lastBaseline', 1, true);
-        if (t.capHeight != null) add('y', fb - t.capHeight, t.id, 'capTop', 0.7, true);
+        const first = t.vis[0], last = t.vis[t.vis.length - 1];
+        const cap = t.capHeight != null ? first.baseline - t.capHeight : null;
+        const sides = flushSides(t, tol);
+        // einzeilig: beide Enden sind klare Kanten (z. B. Preis rechtsbündig zur Spalte)
+        const one = t.vis.length === 1;
+        const x = {};
+        if (one || sides.includes('left')) x.start = { ...edge([t.block.left], 'left'), primary: sides.includes('left') || !sides.length };
+        if (one || sides.includes('right')) x.end = { ...edge([t.block.right], 'right'), primary: sides.includes('right') };
+        const y = { start: edge([cap, first.baseline], 'capTop', [t.block.top]), end: edge([last.baseline], 'lastBaseline', [t.block.bottom]) };
+        const targets = [
+            ...[x.start, x.end].filter(Boolean).flatMap(e => e.vals.map(v => ({ axis: 'x', v, label: e.label }))),
+            { axis: 'y', v: cap, label: 'capTop' }, { axis: 'y', v: first.baseline, label: 'firstBaseline' }, { axis: 'y', v: last.baseline, label: 'lastBaseline' },
+        ].filter(o => Number.isFinite(o.v));
+        els.push({ id: t.id, kind: 'text', x, y, range: [t.block.top, t.block.bottom], targets });
     }
     for (const im of P.images) {
+        if (!im.visible) continue;
         const fe = visibleFrameEdges(im, P.page);
-        for (const [s, val] of Object.entries(fe)) add(s === 'top' || s === 'bottom' ? 'y' : 'x', val, im.id, `frame.${s}`, 1, true);
-        const f = im.features;
-        if (f?.extremes) {
-            const e = f.extremes;
-            add('x', e.left.x, im.id, 'motif.left', 1, false); add('x', e.right.x, im.id, 'motif.right', 1, false);
-            add('y', e.top.y, im.id, 'motif.top', 1, false); add('y', e.bottom.y, im.id, 'motif.bottom', 1, false);
-        } else if (im.motifBox) {
-            const b = im.motifBox;
-            add('x', b.left, im.id, 'motif.left', 1, false); add('x', b.right, im.id, 'motif.right', 1, false);
-            add('y', b.top, im.id, 'motif.top', 1, false); add('y', b.bottom, im.id, 'motif.bottom', 1, false);
+        const box = im.motifBox;
+        if (!box && !Object.keys(fe).length) continue;
+        const ex = im.features?.extremes;
+        const onPage = (s, v) => Math.abs(v - P.page[s]) > 0.3;
+        const side = s => {
+            if (fe[s] != null) return { v: fe[s], hard: true, label: `frame.${s}` };
+            if (!box) return null;
+            const e = ex?.[s];
+            const ev = e ? (s === 'left' || s === 'right' ? e.x : e.y) : null;
+            // Extremwert außerhalb des sichtbaren Motivs (angeschnitten) → sichtbare Motivkante
+            const v = Number.isFinite(ev) && Math.abs(ev - box[s]) <= 0.5 ? ev : box[s];
+            return { v, hard: e ? e.hard !== false : true, label: `motif.${s}` };
+        };
+        const S = Object.fromEntries(['left', 'right', 'top', 'bottom'].map(s => [s, side(s)]));
+        const req = s => (S[s] && S[s].hard && onPage(s, S[s].v) ? edge([S[s].v], S[s].label) : undefined);
+        const gl = im.features?.groundLine;
+        const g0 = gl && Math.abs(gl.angle) <= 2 ? (gl.yLeft + gl.yRight) / 2 : null;
+        // Standlinie nur, wenn sie im sichtbaren Bild liegt
+        const ground = g0 != null && g0 >= im.visible.top - tol && g0 <= im.visible.bottom + tol ? g0 : null;
+        const x = { start: req('left'), end: req('right') };
+        const y = { start: req('top'), end: req('bottom') };
+        if (Number.isFinite(ground)) y.end = { vals: [...(y.end?.vals || []), ground], frame: [], label: y.end ? `${y.end.label}|groundLine` : 'groundLine' };
+        for (const k of ['start', 'end']) { if (!x[k]) delete x[k]; if (!y[k]) delete y[k]; }
+        const targets = [];
+        for (const s of ['left', 'right', 'top', 'bottom']) if (S[s]) targets.push({ axis: s === 'left' || s === 'right' ? 'x' : 'y', v: S[s].v, label: S[s].label });
+        if (Number.isFinite(ground)) targets.push({ axis: 'y', v: ground, label: 'groundLine' });
+        for (const e of im.features?.edges || []) {
+            if (e.cls === 'horizontal') targets.push({ axis: 'y', v: (e.from[1] + e.to[1]) / 2, label: 'edge.h', inner: true });
+            else if (e.cls === 'vertical') targets.push({ axis: 'x', v: (e.from[0] + e.to[0]) / 2, label: 'edge.v', inner: true });
         }
-        if (f?.groundLine && Math.abs(f.groundLine.angle) <= 2) add('y', (f.groundLine.yLeft + f.groundLine.yRight) / 2, im.id, 'groundLine', 1, false);
-        for (const e of f?.edges || []) {
-            if (e.cls === 'horizontal') add('y', (e.from[1] + e.to[1]) / 2, im.id, 'edge.h', 1, false);
-            else if (e.cls === 'vertical') add('x', (e.from[0] + e.to[0]) / 2, im.id, 'edge.v', 1, false);
-        }
+        const vb = box ? intersectRect(box, im.visible) || box : im.visible;
+        els.push({ id: im.id, kind: 'image', x, y, range: [im.frameVisible ? im.visible.top : vb.top, im.frameVisible ? im.visible.bottom : vb.bottom], targets });
     }
+    return els;
+}
+
+/**
+ * S1 Ausrichtung: Anteil der Elemente, deren Kanten auf einer gemeinsamen
+ * Linie mit einem anderen Element oder dem Satzspiegel liegen (je Achse eine
+ * Kante genügt), Strafe für Beinahe-Treffer, Anzahl vertikaler Fluchtlinien
+ * außerhalb des Satzspiegels (weniger = ruhiger), Wunsch-Ausrichtungen als Bonus.
+ * Waagerechte Kanten zählen nur, wenn ein anderes Element in derselben Höhe
+ * steht oder der Block näher als reach am Satzspiegelrand liegt – Texte im
+ * Stapel brauchen keine waagerechte Linie.
+ */
+function scoreAlignment(P, sc, detail) {
+    const al = sc.alignment, tol = al.tolerance, nm = al.nearMiss;
     const ta = P.typeArea;
-    add('x', ta.left, 'typeArea', 'left', 1, false); add('x', ta.right, 'typeArea', 'right', 1, false);
-    add('y', ta.top, 'typeArea', 'top', 1, false); add('y', ta.bottom, 'typeArea', 'bottom', 1, false);
-
-    const layout = cands.filter(c => c.layout);
-    if (!layout.length) return { v: null, note: 'no text or visible image edges' };
-    let wSum = 0, wAnch = 0, wNear = 0;
-    for (const c of layout) {
-        const others = cands.filter(o => o.axis === c.axis && o.owner !== c.owner);
-        const d = others.length ? Math.min(...others.map(o => Math.abs(o.v - c.v))) : Infinity;
-        const near = others.some(o => { const x = Math.abs(o.v - c.v); return x > tol && x <= al.nearMiss; });
-        c.anchored = d <= tol;
-        wSum += c.w;
-        if (c.anchored) wAnch += c.w;
-        if (near) { wNear += c.w; c.nearMiss = true; }
+    const els = alignmentEdges(P, tol);
+    if (!els.length) return { v: null, note: 'no text or visible image edges' };
+    const taLines = { x: [ta.left, ta.right], y: [ta.top, ta.bottom] };
+    const status = (axis, e, owner) => {
+        let d = Infinity, dOuter = Infinity, by = null;
+        for (const v of e.vals) {
+            for (const o of els) {
+                if (o.id === owner.id) continue;
+                for (const t of o.targets) {
+                    if (t.axis !== axis) continue;
+                    const x = Math.abs(t.v - v);
+                    if (x < d) { d = x; by = `${o.id}.${t.label}`; }
+                    if (!t.inner) dOuter = Math.min(dOuter, x);
+                }
+            }
+            for (const tv of taLines[axis]) { const x = Math.abs(tv - v); if (x < d) { d = x; by = 'typeArea'; } dOuter = Math.min(dOuter, x); }
+        }
+        for (const v of e.frame) for (const tv of taLines[axis]) { const x = Math.abs(tv - v); if (x < d) { d = x; by = 'typeArea'; } dOuter = Math.min(dOuter, x); }
+        // innere Motivkanten zählen als Treffer, nicht als Beinahe-Treffer
+        return { d, by, hit: d <= tol, near: d > tol && dOuter <= nm };
+    };
+    const reach = al.reach ?? 5;
+    const rows = [], edgeLog = [];
+    for (const el of els) {
+        for (const axis of ['x', 'y']) {
+            const E = el[axis];
+            const keys = Object.keys(E);
+            if (!keys.length) continue;
+            if (axis === 'y') {
+                const [t0, b0] = el.range;
+                const beside = els.some(o => o.id !== el.id && Math.min(b0, o.range[1]) - Math.max(t0, o.range[0]) > 0.5);
+                const nearTA = t0 - ta.top < reach || ta.bottom - b0 < reach;
+                if (!beside && !nearTA) continue;
+            }
+            const st = keys.map(k => ({ k, ...status(axis, E[k], el), label: E[k].label, v: E[k].vals[0] ?? E[k].frame[0] }));
+            const hit = st.some(s => s.hit), near = st.some(s => s.near);
+            rows.push({ id: el.id, axis, hit, near });
+            for (const s of st) edgeLog.push({ name: `${el.id}.${s.label}`, axis, v: s.v, d: s.d, by: s.by, hit: s.hit, near: s.near, primary: E[s.k].primary !== false });
+        }
     }
-    const shared = wAnch / wSum, nearFrac = wNear / wSum;
-    let base = clamp01(shared - al.nearMissPenalty * nearFrac);
+    // vertikale Fluchtlinien: Cluster der bündigen oder getroffenen x-Kanten außerhalb des Satzspiegelrands
+    const xs = edgeLog.filter(e => e.axis === 'x' && (e.primary || e.hit)).map(e => e.v).filter(v => !taLines.x.some(t => Math.abs(t - v) <= tol)).sort((a, b) => a - b);
+    let k = 0;
+    for (let i = 0; i < xs.length; i++) if (!i || xs[i] - xs[i - 1] > tol) k++;
+    const nX = els.filter(el => Object.keys(el.x).length).length;
+    const calm = nX ? clamp01(1 - Math.max(0, k - 1) / nX) : 1;
 
-    // Wunsch-Ausrichtungen
+    const part = axis => { const r = rows.filter(x => x.axis === axis); return r.length ? r.filter(x => x.hit).length / r.length : null; };
+    const fx = part('x'), fy = part('y');
+    const nearFrac = rows.length ? rows.filter(r => r.near).length / rows.length : 0;
+    const pw = { x: 0.45, y: 0.25, lines: 0.3, ...(al.parts || {}) };
+    let acc = pw.lines * calm, ws = pw.lines;
+    if (fx !== null) { acc += pw.x * fx; ws += pw.x; }
+    if (fy !== null) { acc += pw.y * fy; ws += pw.y; }
+    const base = clamp01(acc / ws - al.nearMissPenalty * nearFrac);
+
     const wishRes = [];
     for (const w of al.wishes || []) {
         const A = anchorValues(P, w.a), B = [].concat(w.b).flatMap(r => anchorValues(P, r));
@@ -656,29 +752,30 @@ function scoreAlignment(P, sc, detail) {
     }
     let v = base;
     if (wishRes.length && al.wishWeight > 0) {
-        const ws = wishRes.reduce((s, x) => s + x.weight, 0);
-        const wv = ws ? wishRes.reduce((s, x) => s + x.s * x.weight, 0) / ws : 0;
+        const wsum = wishRes.reduce((s, x) => s + x.weight, 0);
+        const wv = wsum ? wishRes.reduce((s, x) => s + x.s * x.weight, 0) / wsum : 0;
         v = (1 - al.wishWeight) * base + al.wishWeight * wv;
     }
     if (detail) {
         const lines = {};
         for (const axis of ['x', 'y']) {
-            const cs = cands.filter(c => c.axis === axis).sort((a, b) => a.v - b.v);
-            const clusters = [];
-            for (const c of cs) {
-                const last = clusters[clusters.length - 1];
-                if (last && c.v - last.start <= tol) last.m.push(c); else clusters.push({ start: c.v, m: [c] });
+            const hits = edgeLog.filter(e => e.axis === axis && e.hit).sort((a, b) => a.v - b.v);
+            const groups = [];
+            for (const e of hits) {
+                const g = groups[groups.length - 1];
+                if (g && e.v - g.v0 <= tol) { g.vs.push(e.v); g.names.add(e.name).add(e.by); } else groups.push({ v0: e.v, vs: [e.v], names: new Set([e.name, e.by]) });
             }
-            lines[axis] = clusters.filter(cl => cl.m.some(c => c.layout) && new Set(cl.m.map(c => c.owner)).size > 1)
-                .map(cl => [rd(mean(cl.m.map(c => c.v)), 2), cl.m.map(c => `${c.owner}.${c.kind}`).join(' ')]);
+            lines[axis] = groups.map(g => [rd(mean(g.vs), 2), [...g.names].join(' ')]);
         }
         detail.alignment = {
             lines,
-            unanchored: layout.filter(c => !c.anchored).map(c => `${c.owner}.${c.kind}@${rd(c.v, 2)}${c.nearMiss ? '~' : ''}`),
+            unanchored: edgeLog.filter(e => !e.hit).map(e => `${e.name}@${rd(e.v, 2)}${e.near ? `~${rd(e.d, 2)}` : ''}`),
+            verticalLines: k,
             wishes: wishRes.map(({ wish, d }) => [wish, d]),
         };
     }
-    const note = `${rd(shared * 100, 0)} % anchored, ${rd(nearFrac * 100, 0)} % near-miss${wishRes.length ? `, wishes ${wishRes.map(w => `${w.s >= 0.99 ? '✓' : rd(w.d, 1)}`).join('/')}` : ''}`;
+    const pct = x => (x === null ? '–' : `${rd(x * 100, 0)} %`);
+    const note = `x ${pct(fx)}, y ${pct(fy)} on lines, ${rows.filter(r => r.near).length} near-miss, ${k} extra vertical line(s)${wishRes.length ? `, wishes ${wishRes.map(w => `${w.s >= 0.99 ? '✓' : rd(w.d, 1)}`).join('/')}` : ''}`;
     return { v, note };
 }
 
@@ -970,6 +1067,30 @@ function scoreGaze(P, sc) {
     const cos = (Math.cos(rad) * tx - Math.sin(rad) * ty) / len;
     const k = clamp01(d.confidence / sc.gaze.fullConfidence);
     return { v: 0.5 + 0.5 * cos * k, note: `motif looks ${d.dir} (${d.confidence}), cos to text ${rd(cos, 2)}` };
+}
+
+/** Skriptlabel-Schlüssel, unter dem Duplikate (artwork_apply) die id ihres Quell-Objekts tragen. */
+export const SOURCE_LABEL = 'artworkSource';
+
+/**
+ * Paarung Objekt → Original auf der Quell-Ebene für H4: Quell-Objekt per
+ * Skriptlabel (item.src), Objekt selbst auf der Quell-Ebene, gleicher
+ * Textinhalt (eindeutig), zuletzt gleiche Rolle (eindeutig, nie 'unknown').
+ * @param {Array<{id:number, role:string, src?:number, style?:object, props:{layer:string, kind:string, content?:string}}>} items
+ * @param {string} source Name der Quell-Ebene
+ * @returns {(item:object) => object|null} Quell-Objekt oder null
+ */
+export function originalPairing(items, source) {
+    const src = items.filter(it => it.props.layer === source && it.props.kind === 'text' && it.style);
+    const byId = new Map(src.map(it => [it.id, it]));
+    const unique = key => {
+        const m = new Map();
+        for (const it of src) { const k = key(it); m.set(k, m.has(k) ? null : it); }
+        return m;
+    };
+    const norm = it => String(it.props.content ?? '').replace(/\s+/g, ' ').trim();
+    const byContent = unique(norm), byRole = unique(it => it.role);
+    return it => byId.get(it.src) || byId.get(it.id) || (norm(it) && byContent.get(norm(it))) || (it.role !== 'unknown' && byRole.get(it.role)) || null;
 }
 
 // ------------------------------------------------------------------ Gesamt

@@ -17,7 +17,7 @@ import { TEXT_HELPERS } from '../utils/textSnippets.js';
 import { loadConfig } from '../utils/layoutModel.js';
 import { getMotifMask, loadGray } from '../utils/imageMask.js';
 import { getImageFeatures } from '../utils/imageFeatures.js';
-import { scoringConfig, leadRole } from '../utils/layoutScore.js';
+import { scoringConfig, leadRole, SOURCE_LABEL } from '../utils/layoutScore.js';
 import {
     solverConfig, measurePlan, planMeasureJobs, batchJobs, mergeMeasurements, buildProblem, solve,
     polygonJobs, applyPolygonResult, prefilter, evaluate, selectDiverse, toSpec, validateSpec, compareApplied,
@@ -141,6 +141,8 @@ export function applyCode(specs, layerNames, hyphProps, { showFirstOnly = true }
             const srcLayers = new Map();
             const relock = [];
             const unlock = l => { if (l.locked) { l.locked = false; relock.push(l); } };
+            // Duplikat merkt sich das ursprüngliche Quell-Objekt (H4-Paarung in score_layout)
+            const __srcLabel = (src, d) => { try { d.insertLabel('${SOURCE_LABEL}', src.extractLabel('${SOURCE_LABEL}') || String(src.id)); } catch (e) {} };
             ${withMillimetersUnitsSnippet(`
                 try {
                     for (let i = 0; i < __specs.length; i++) {
@@ -159,6 +161,7 @@ export function applyCode(specs, layerNames, hyphProps, { showFirstOnly = true }
                                 const d = src.duplicate();
                                 try {
                                     d.itemLayer = L;
+                                    __srcLabel(src, d);
                                     __prepare(d);
                                     const ref = d.characters.item(0).pointSize;
                                     if (t.pointSize && Math.abs(t.pointSize / ref - 1) > 1e-4) __scale(d, t.pointSize / ref);
@@ -189,6 +192,7 @@ export function applyCode(specs, layerNames, hyphProps, { showFirstOnly = true }
                                 const d = src.duplicate();
                                 try {
                                     d.itemLayer = L;
+                                    __srcLabel(src, d);
                                     d.geometricBounds = im.frame;
                                     const g = d.allGraphics.length ? d.allGraphics[0] : null;
                                     if (!g) throw new Error('frame contains no graphic');
@@ -425,7 +429,8 @@ export class LayoutSolverHandlers {
             if (!out.valid.length) {
                 return formatErrorResponse(`No valid layout found (${out.stats.generated} generated, ${out.stats.prefiltered} passed prefilter, ${out.stats.scored} scored). Relax config.solver (splits, topologies, measure.minWidth) or check roles.`, op);
             }
-            const chosen = selectDiverse(out.valid, count, sc.diversity.minDistance);
+            const pb = P.fmt.page.bounds;
+            const chosen = selectDiverse(out.valid, count, { ...sc.diversity, page: { top: pb[0], left: pb[1], bottom: pb[2], right: pb[3] } });
             const specs = chosen.map((c, i) => toSpec(c, P, `c${i + 1}`));
             const layerNames = specs.map((_, i) => `${prefix}${i + 1}`);
             lastRun = { docPath: res.docPath, configFile: cfg.file, sourceLayer, pageIndex };

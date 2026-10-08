@@ -196,6 +196,16 @@ test('Kandidaten: Preis einzeilig, Text im Satzspiegel, nicht im Motiv', () => {
     }
 });
 
+test('Generator: Anker motifBottom setzt die letzte Grundlinie auf die Standlinie', () => {
+    const mb = RESULT.valid.filter(c => c.params.anchor === 'motifBottom');
+    assert.ok(mb.length > 0, 'keine gültigen motifBottom-Kandidaten');
+    for (const c of mb.slice(0, 50)) {
+        const stack = c.params.price === 'below' || c.params.price === 'belowRight' ? c.texts.find(t => t.role === 'price') : c.texts.find(t => t.role === 'description');
+        const lb = stack.lines.filter(l => l.text.trim()).at(-1).baseline;
+        assert.ok(Math.abs(lb - c.placed.ground) < 0.01, `${lb} vs ${c.placed.ground}`);
+    }
+});
+
 test('H11: Headline in allen Kandidaten zuerst, Preis-Anker davor gar nicht erzeugt', () => {
     assert.ok(RESULT.stats.leadOrder > 0, 'Preis-Anker vor der Headline verworfen');
     for (const c of RESULT.valid) {
@@ -247,16 +257,41 @@ test('H12: Bild-Setups mit zu wenig sichtbarem Motiv werden verworfen', () => {
     }
 });
 
-test('selectDiverse: 3 verschiedene, Abstand > 0', () => {
-    const sel = selectDiverse(RESULT.valid, 3, sc.diversity.minDistance);
+test('selectDiverse: 3 verschiedene, Bester zuerst, Abstand > 0', () => {
+    const page = { top: 0, left: 0, bottom: 60, right: 75 };
+    const sel = selectDiverse(RESULT.valid, 3, { ...sc.diversity, page });
     assert.equal(sel.length, 3);
-    assert.ok(sel[0].score >= sel[1].score - 1 || true);
-    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) assert.ok(layoutDistance(sel[i], sel[j]) > 0.05);
-    assert.equal(layoutDistance(sel[0], sel[0]), 0);
+    assert.equal(sel[0].score, Math.max(...RESULT.valid.map(c => c.score)));
+    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) assert.ok(layoutDistance(sel[i], sel[j], { page }) > 0.05);
+    assert.equal(layoutDistance(sel[0], sel[0], { page }), 0);
+});
+
+test('selectDiverse: ähnliche Spitzenkandidaten verlieren gegen anderen mit leicht niedrigerem Score', () => {
+    const page = { top: 0, left: 0, bottom: 60, right: 75 };
+    const R = (t, l, b, r) => ({ top: t, left: l, bottom: b, right: r });
+    // Headline oben, Text, Preis links, Bild rechts unten – nur leicht verschoben
+    const similar = (score, dx, topo = 'imageBottom') => ({
+        score, setup: { topo, bleed: [] }, params: {}, placed: { motifBox: R(32 + dx, 40 + dx, 55, 70) },
+        texts: [{ role: 'headline', box: R(5, 5, 15, 65) }, { role: 'description', box: R(17, 5, 28 + dx, 60) }, { role: 'price', box: R(32, 5, 40, 30) }],
+    });
+    const other = {
+        score: 0.8, setup: { topo: 'imageLeft', bleed: ['left'] }, params: {}, placed: { motifBox: R(5, -3, 55, 30) },
+        texts: [{ role: 'headline', box: R(5, 35, 20, 70) }, { role: 'description', box: R(22, 35, 40, 70) }, { role: 'price', box: R(44, 50, 52, 70) }],
+    };
+    const cands = [similar(0.86, 0), similar(0.85, 1), similar(0.845, 2, 'overlay'), other];
+    const sel = selectDiverse(cands, 2, { page });
+    assert.equal(sel[0], cands[0]);
+    assert.equal(sel[1], other);
+    assert.ok(layoutDistance(cands[0], cands[2], { page }) < 0.2, 'Overlay mit gleicher Anordnung gilt als ähnlich');
+    // unter minScore (90 % des Besten) und fallbackScore nur, wenn nichts anderes verschieden genug ist
+    const low = { ...other, score: 0.5, _feat: null };
+    const sel2 = selectDiverse([...cands.slice(0, 3), low], 2, { page, fallbackScore: 0.8 });
+    assert.notEqual(sel2[1], low);
+    assert.throws(() => solverConfig({ solver: { diversity: { minScore: 1.5 } } }), /minScore/);
 });
 
 test('toSpec/validateSpec/compareApplied: serialisierbar, Abweichungen erkannt', () => {
-    const [c] = selectDiverse(RESULT.valid, 1);
+    const [c] = selectDiverse(RESULT.valid, 1, {});
     const spec = toSpec(c, P, 'c1');
     const json = JSON.parse(JSON.stringify(spec));
     validateSpec(json);

@@ -6,7 +6,7 @@
 import assert from 'assert/strict';
 import { loadConfig, buildFormat, deepMerge, validateConfig } from '../src/utils/layoutModel.js';
 import {
-    scoreLayout, scoreScene, checkHardRules, scoringConfig, colorInk, spearman, parseAnchor, placeImageData, rect, PT_MM,
+    scoreLayout, scoreScene, checkHardRules, scoringConfig, colorInk, spearman, parseAnchor, placeImageData, rect, PT_MM, originalPairing,
 } from '../src/utils/layoutScore.js';
 
 let failed = 0;
@@ -173,6 +173,34 @@ test('H4 Stiländerungen: Headline ±15 %, andere unverändert, Schrift/Farbe fi
     assert.ok(scoreLayout(n).skipped.some(x => x.rule === 'H4'));
 });
 
+test('H4: Original über Quell-Objekt, nicht über Rolle (unknown nie per Rolle)', () => {
+    const it = (id, layer, size, content, extra = {}) => ({ id, role: 'unknown', style: { size }, props: { layer, kind: 'text', content }, ...extra });
+    const items = [
+        it(1, 'Ebene 1', 13, 'Teaser Text'), it(2, 'Ebene 1', 9.5, 'Infobox Text'),
+        it(11, 'L1', 13, 'Teaser Text', { src: 1 }), it(12, 'L1', 9.5, 'Infobox Text', { src: 2 }),
+        it(21, 'L2', 9.5, 'Infobox Text'), it(22, 'L2', 13, 'anders'),
+    ];
+    const pair = originalPairing(items, 'Ebene 1');
+    assert.equal(pair(items[2]).id, 1);
+    assert.equal(pair(items[3]).id, 2);
+    assert.equal(pair(items[4]).id, 2); // gleicher Inhalt
+    assert.equal(pair(items[5]), null); // unknown ohne Label/Inhalt: keine Paarung nach Rolle
+    // zwei unknown-Texte verschiedener Größe, je unverändert: kein H4
+    const cfg = deepMerge(CONFIG, { roles: { unknown: { rank: 9, readingOrder: null, allow: {} } } });
+    const s = baseScene({ config: cfg, images: [] });
+    s.elements = [
+        { ...text(11, 'headline', 5, 5, [40]), role: 'unknown', style: { ...STYLES.headline, size: 13 }, original: { ...STYLES.headline, size: pair(items[2]).style.size } },
+        { ...text(12, 'description', 5, 20, [40]), role: 'unknown', style: { ...STYLES.description, size: 9.5 }, original: { ...STYLES.description, size: pair(items[3]).style.size } },
+    ];
+    assert.ok(!rules(scoreLayout(s)).includes('H4'), JSON.stringify(scoreLayout(s).violations));
+    // nach Rolle gepaart (beide mit 13 pt) wäre das ein Verstoß
+    s.elements[1].original = { ...STYLES.description, size: 13 };
+    assert.ok(rules(scoreLayout(s)).includes('H4'));
+    // Rolle als Fallback, wenn eindeutig und nicht unknown
+    const named = [{ ...items[0], role: 'headline' }, { ...items[2], role: 'headline', src: undefined, props: { ...items[2].props, content: 'neu' } }];
+    assert.equal(originalPairing(named, 'Ebene 1')(named[1]).id, 1);
+});
+
 test('H5 effektive Auflösung', () => {
     const s = baseScene();
     s.images[0].effPpi = [180, 180];
@@ -282,6 +310,52 @@ test('S1 Ausrichtung: gemeinsame Kanten besser als verstreute; Wunsch-Ausrichtun
     const on = withGround(0), off = withGround(1);
     assert.ok(on.breakdown.S1.v > off.breakdown.S1.v, `${on.breakdown.S1.v} vs ${off.breakdown.S1.v}`);
     assert.ok(on.detail.alignment.wishes.some(([w, d]) => /price.lastBaseline/.test(w) && d === 0));
+});
+
+test('S1: ruhige, ausgerichtete Szene deutlich besser als verstreute', () => {
+    // Headline, Beschreibung, Preis linksbündig im Stapel am Satzspiegel; Bild rechts, Motiv-Oberkante = Versalhöhe der Beschreibung
+    const cap = size => size * PT_MM * 0.7;
+    const motifAt = top => [top, 44, 50, 70];
+    const desc = text(2, 'description', 5, 17, [34, 33, 34, 25], { texts: ['Wort Wort Wort Wort', 'Wort Wort Wort Wort', 'Wort Wort Wort Wort', 'Wort Wort Wort'] });
+    const dCap = desc.lines[0].baseline - cap(8);
+    const calm = baseScene({
+        elements: [text(1, 'headline', 5, 5, [60, 40]), desc, text(3, 'price', 5, 41, [26])],
+        images: [image(10, [dCap, 44, 55, 78], motifAt(dCap), { features: features(motifAt(dCap)) })],
+    });
+    const scattered = baseScene({
+        elements: [text(1, 'headline', 7.3, 6.4, [56, 38]), text(2, 'description', 11.8, 19.2, [28, 27, 28, 20]), text(3, 'price', 6.1, 42.6, [26])],
+        images: [image(10, [21, 43, 53, 66], [22, 44.5, 50, 64.2], { features: features([22, 44.5, 50, 64.2]) })],
+    });
+    const a = S(calm, 'S1'), b = S(scattered, 'S1');
+    assert.ok(a > 0.75, `ruhig ${a}`);
+    assert.ok(a > b + 0.35, `${a} vs ${b}`);
+    console.log(`     S1 ruhig ${a}, verstreut ${b}`);
+});
+
+test('S1: Beinahe-Treffer schlechter als Treffer; Flattersatz-Rechtskante zählt nicht', () => {
+    const at = x => { const s = baseScene(); s.elements[2] = text(3, 'price', x, 41.5, [26]); return s; };
+    const hit = S(at(42), 'S1'), near = S(at(42.8), 'S1');
+    assert.ok(hit > near + 0.05, `${hit} vs ${near}`);
+    assert.match(JSON.stringify(scoreLayout(at(42.8), { detail: true }).detail.alignment.unanchored), /3\.left@42\.8~/);
+    // linksbündige Beschreibung: rechte Flatterkante ist keine Linie, ihre Lage ändert S1 nicht
+    const rag = widths => { const s = baseScene(); s.elements[1] = text(2, 'description', 42, 17, widths, { style: {} }); s.elements[1].align = 'LEFT_ALIGN'; return s; };
+    const r1 = scoreLayout(rag([28, 27, 28, 20]), { detail: true }), r2 = scoreLayout(rag([25.5, 21, 27.2, 19]), { detail: true });
+    assert.equal(r1.breakdown.S1.v, r2.breakdown.S1.v);
+    assert.ok(!JSON.stringify(r1.detail.alignment).includes('2.right'));
+    // rechtsbündig: rechte Kante zählt, linke nicht
+    const right = rag([28, 27, 28, 20]);
+    right.elements[1].lines.forEach(l => { l.x = 70 - l.width; });
+    right.elements[1].align = 'RIGHT_ALIGN';
+    const rr = scoreLayout(right, { detail: true }).detail.alignment;
+    assert.ok(JSON.stringify(rr.lines.x).includes('2.right'), JSON.stringify(rr));
+    assert.ok(!JSON.stringify(rr).includes('2.left'));
+});
+
+test('S1: Texte im Stapel brauchen keine waagerechte Linie', () => {
+    const s = baseScene({ images: [], elements: [text(1, 'headline', 5, 5, [60, 40]), text(2, 'description', 5, 20, [60, 55, 58]), text(3, 'price', 5, 41, [26])] });
+    const d = scoreLayout(s, { detail: true });
+    assert.ok(!d.detail.alignment.unanchored.some(x => /^2\./.test(x)), JSON.stringify(d.detail.alignment));
+    assert.match(d.breakdown.S1.note, /x 100 %/);
 });
 
 test('S1: unsichtbare Rahmenkanten (weißer Hintergrund) zählen nicht, angeschnittenes Motiv schon', () => {
